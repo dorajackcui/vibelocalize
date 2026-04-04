@@ -173,7 +173,7 @@
   <body>
     <div class="wrap">
       <h1>Workbook + ChatGPT Loop</h1>
-      <p class="lead">先在终端做一次 <code>npm run bootstrap</code> 绑定 ChatGPT project，再在这里选择工作簿、设置参数并启动任务。</p>
+      <p class="lead">首次先在终端运行一次 <code>npm run bootstrap</code> 绑定 ChatGPT project，之后日常直接 <code>npm start</code> 即可。</p>
 
       <div class="grid">
         <section class="panel">
@@ -355,7 +355,7 @@
 
         const warnings = [];
         if (status.missingBootstrap) {
-          warnings.push("还没完成 bootstrap。请先在终端运行 npm run bootstrap。");
+          warnings.push("还没完成 bootstrap。请先在终端运行 npm run bootstrap 一次。");
         }
         if (status.missingWorkbook) {
           warnings.push("还没选择工作簿文件。");

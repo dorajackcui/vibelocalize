@@ -54,10 +54,6 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const config = await loadOrCreateConfig();
 
-  if (!config.workbook.filePath) {
-    throw new Error("No workbook selected. Choose a file in the UI or set workbook.filePath in automation.config.json.");
-  }
-
   const browserSession = await launchBrowser(config);
 
   try {
@@ -69,6 +65,10 @@ async function main() {
         console.log("Bootstrap complete. You can now run: npm run run");
         return;
       }
+    }
+
+    if (!config.workbook.filePath) {
+      throw new Error("No workbook selected. Choose a file in the UI or set workbook.filePath in automation.config.json.");
     }
 
     const startRow = args.fromRow ?? config.workflow.startRow;
@@ -185,6 +185,7 @@ function readNumber(value, fallback) {
 
 async function launchBrowser(config) {
   if (config.browser.mode === "attach") {
+    await ensureChromeDebugPort(config);
     return connectToExistingChrome(config);
   }
 
@@ -213,8 +214,47 @@ async function launchBrowser(config) {
   };
 }
 
+async function ensureChromeDebugPort(config) {
+  const debugUrl = getChromeDebugUrl(config);
+  if (await isChromeDebugPortReady(debugUrl)) {
+    return;
+  }
+
+  if (process.platform !== "darwin") {
+    throw new Error(
+      [
+        `Could not reach Chrome remote debugging at ${debugUrl}.`,
+        "Auto-launch is only implemented for macOS right now.",
+        `Please start Chrome manually with --remote-debugging-port=${config.browser.debugPort} and retry.`
+      ].join(" ")
+    );
+  }
+
+  const userDataDir = path.resolve(ROOT, config.browser.userDataDir);
+  await fs.mkdir(userDataDir, { recursive: true });
+
+  console.log(`Chrome debug port ${config.browser.debugPort} is not ready. Launching Google Chrome for you...`);
+  await execFileAsync("open", [
+    "-na",
+    "Google Chrome",
+    "--args",
+    `--remote-debugging-port=${config.browser.debugPort}`,
+    `--user-data-dir=${userDataDir}`
+  ]);
+
+  const ready = await waitForChromeDebugPort(debugUrl, 15000);
+  if (!ready) {
+    throw new Error(
+      [
+        `Google Chrome was launched, but the remote debugging port ${config.browser.debugPort} did not become available in time.`,
+        "Make sure Chrome is installed and retry."
+      ].join(" ")
+    );
+  }
+}
+
 async function connectToExistingChrome(config) {
-  const debugUrl = `http://127.0.0.1:${config.browser.debugPort}`;
+  const debugUrl = getChromeDebugUrl(config);
   const browser = await chromium.connectOverCDP(debugUrl);
   const page = await pickChatgptPage(browser, config);
 
@@ -268,8 +308,8 @@ async function pickChatgptPage(browser, config) {
 
 async function bootstrapChatgpt(config, browserSession) {
   if (config.browser.mode === "attach") {
-    console.log(`Attach mode is enabled. Use your own Chrome started with remote debugging on port ${config.browser.debugPort}.`);
-    console.log("Log in to ChatGPT in that Chrome window first, and finish any human verification there.");
+    console.log(`Attach mode is enabled. Connected to Chrome on port ${config.browser.debugPort}.`);
+    console.log("If needed, log in to ChatGPT in that Chrome window first and finish any human verification there.");
   } else {
     console.log("A dedicated Chrome window is open.");
     console.log("Log in to ChatGPT if needed.");
@@ -286,6 +326,39 @@ async function bootstrapChatgpt(config, browserSession) {
   await saveConfig(config);
   console.log(`Captured project URL: ${config.chatgpt.projectUrl}`);
   return page;
+}
+
+function getChromeDebugUrl(config) {
+  return `http://127.0.0.1:${config.browser.debugPort}`;
+}
+
+async function isChromeDebugPortReady(debugUrl) {
+  try {
+    const response = await fetch(`${debugUrl}/json/version`);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForChromeDebugPort(debugUrl, timeoutMs) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    if (await isChromeDebugPortReady(debugUrl)) {
+      return true;
+    }
+
+    await sleep(500);
+  }
+
+  return false;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function runLoop({

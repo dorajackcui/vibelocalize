@@ -4,19 +4,21 @@
 
 1. 安装依赖：
    `npm install`
-2. 用可调试模式启动你自己的 Chrome：
-   `mkdir -p "$HOME/.codex-chrome-debug-profile"`
-   `open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/.codex-chrome-debug-profile"`
-3. 在这个 Chrome 里登录 ChatGPT，完成人类验证，并打开目标 project。
-4. 首次运行前做一次绑定：
+2. 首次运行前做一次绑定：
    `npm run bootstrap`
-5. 启动界面：
-   `npm run ui`
-6. 打开：
+3. 如果脚本发现没有可调试的 Chrome，会自动帮你拉起一个；在这个 Chrome 里登录 ChatGPT，完成人类验证，并打开目标 project。
+4. 绑定完成后，日常直接启动：
+   `npm start`
+5. 页面会自动打开到：
    `http://127.0.0.1:4312`
-7. 选择 `.xlsx` 或 `.xlsm` 文件，选好 sheet。
-8. 设置参数后点 `确认参数`，看概览区是否同步显示。
-9. 点 `开始任务`。
+6. 选择 `.xlsx` 或 `.xlsm` 文件，选好 sheet。
+7. 设置参数后点 `确认参数`，看概览区是否同步显示。
+8. 点 `开始任务`。
+
+## 更省事的使用方式
+
+- 首次初始化：`npm install` -> `npm run bootstrap` -> `npm start`
+- 日常启动：`npm start`
 
 ## 说明
 
@@ -29,6 +31,7 @@
 ## 常用命令
 
 - `npm run bootstrap`
+- `npm start`
 - `npm run ui`
 - `npm run run`
 - `node scripts/chatgpt-wps-loop.mjs --max-loops=1`

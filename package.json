@@ -5,7 +5,8 @@
   "scripts": {
     "bootstrap": "node scripts/chatgpt-wps-loop.mjs --bootstrap",
     "run": "node scripts/chatgpt-wps-loop.mjs",
-    "ui": "node scripts/ui-server.mjs"
+    "ui": "node scripts/ui-server.mjs",
+    "start": "node scripts/app-launcher.mjs"
   },
   "dependencies": {
     "playwright": "^1.54.0"
