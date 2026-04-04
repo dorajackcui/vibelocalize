@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Workbook + ChatGPT Loop</title>
+    <style>
+      :root {
+        --bg: #f4efe6;
+        --panel: #fffaf0;
+        --ink: #1f2933;
+        --muted: #6b7280;
+        --line: #d8cfc0;
+        --accent: #b45309;
+        --accent-strong: #92400e;
+        --danger: #b91c1c;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "SF Pro Text", "PingFang SC", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(180, 83, 9, 0.12), transparent 28%),
+          linear-gradient(180deg, #fbf7f1 0%, var(--bg) 100%);
+        color: var(--ink);
+      }
+
+      .wrap {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 32px;
+      }
+
+      .lead {
+        margin: 0 0 24px;
+        color: var(--muted);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+      }
+
+      .panel {
+        background: color-mix(in srgb, var(--panel) 92%, white);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: 0 10px 30px rgba(31, 41, 51, 0.06);
+      }
+
+      .panel h2 {
+        margin: 0 0 14px;
+        font-size: 18px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 12px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      input, select {
+        width: 100%;
+        margin-top: 6px;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        font-size: 15px;
+        background: #fff;
+        color: var(--ink);
+      }
+
+      input[readonly] {
+        background: #f9f6ef;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 18px;
+      }
+
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 999px;
+        padding: 11px 18px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .primary {
+        background: var(--accent);
+        color: white;
+      }
+
+      .secondary {
+        background: white;
+        color: var(--ink);
+        border: 1px solid var(--line);
+      }
+
+      .danger {
+        background: #fff1f2;
+        color: var(--danger);
+        border: 1px solid #fecdd3;
+      }
+
+      .meta {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px;
+      }
+
+      .stat {
+        padding: 14px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.75);
+        border: 1px solid var(--line);
+      }
+
+      .stat strong {
+        display: block;
+        font-size: 24px;
+        margin-bottom: 4px;
+      }
+
+      .hint, .warning {
+        margin-top: 14px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        font-size: 14px;
+      }
+
+      .hint {
+        background: #fff7ed;
+        color: var(--accent-strong);
+      }
+
+      .warning {
+        background: #fff1f2;
+        color: var(--danger);
+      }
+
+      pre {
+        margin: 0;
+        background: #241c16;
+        color: #f9f4ed;
+        border-radius: 14px;
+        padding: 16px;
+        min-height: 260px;
+        max-height: 420px;
+        overflow: auto;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Workbook + ChatGPT Loop</h1>
+      <p class="lead">先在终端做一次 <code>npm run bootstrap</code> 绑定 ChatGPT project，再在这里选择工作簿、设置参数并启动任务。</p>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>文件</h2>
+          <label>
+            Workbook Path
+            <input id="workbookPath" type="text" readonly placeholder="还没选择文件">
+          </label>
+          <label>
+            Sheet
+            <select id="sheetName"></select>
+          </label>
+          <div class="actions">
+            <button class="secondary" id="choose-file-btn" type="button">选择文件</button>
+            <button class="primary" id="save-btn" type="button">保存配置</button>
+          </div>
+          <div class="hint" id="message">加载中…</div>
+          <div class="warning" id="warning" hidden></div>
+        </section>
+
+        <section class="panel">
+          <h2>参数</h2>
+          <form id="config-form">
+            <label>
+              batchSize
+              <input id="batchSize" name="batchSize" type="number" min="1">
+            </label>
+            <label>
+              resetConversationEveryRuns
+              <input id="resetConversationEveryRuns" name="resetConversationEveryRuns" type="number" min="1">
+            </label>
+            <label>
+              newConversationLimit
+              <input id="newConversationLimit" name="newConversationLimit" type="number" min="0">
+            </label>
+            <label>
+              startRow
+              <input id="startRow" name="startRow" type="number" min="1">
+            </label>
+            <label>
+              sourceColumn
+              <input id="sourceColumn" name="sourceColumn" type="text" maxlength="4">
+            </label>
+            <label>
+              targetColumn
+              <input id="targetColumn" name="targetColumn" type="text" maxlength="4">
+            </label>
+          </form>
+          <div class="actions">
+            <button class="primary" id="apply-btn" type="button">确认参数</button>
+            <button class="secondary" id="run-btn" type="button">开始任务</button>
+            <button class="danger" id="stop-btn" type="button">停止任务</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>概览</h2>
+          <div class="meta">
+            <div class="stat">
+              <strong id="total-conversations">0</strong>
+              <span>总对话窗口数</span>
+            </div>
+            <div class="stat">
+              <strong id="total-runs">0</strong>
+              <span>总循环次数</span>
+            </div>
+            <div class="stat">
+              <strong id="total-rows">0</strong>
+              <span>理论总行数</span>
+            </div>
+            <div class="stat">
+              <strong id="next-row">按配置</strong>
+              <span>当前起始行</span>
+            </div>
+          </div>
+          <div class="hint">
+            跑脚本时，最好不要同时在 WPS 里打开同一个文件，避免保存冲突。
+          </div>
+          <div class="hint" id="applied-summary">当前还没有确认参数。</div>
+        </section>
+      </div>
+
+      <section class="panel" style="margin-top: 16px;">
+        <h2>运行日志</h2>
+        <pre id="log"></pre>
+      </section>
+    </div>
+
+    <script>
+      const fields = ["batchSize", "resetConversationEveryRuns", "newConversationLimit", "startRow", "sourceColumn", "targetColumn"];
+      const messageEl = document.getElementById("message");
+      const warningEl = document.getElementById("warning");
+      const logEl = document.getElementById("log");
+      const workbookPathEl = document.getElementById("workbookPath");
+      const sheetNameEl = document.getElementById("sheetName");
+      const appliedSummaryEl = document.getElementById("applied-summary");
+
+      async function fetchJson(url, options) {
+        const response = await fetch(url, {
+          headers: { "Content-Type": "application/json" },
+          ...options
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Request failed.");
+        }
+        return data;
+      }
+
+      function setMessage(text) {
+        messageEl.textContent = text;
+      }
+
+      function setWarning(text) {
+        warningEl.hidden = !text;
+        warningEl.textContent = text || "";
+      }
+
+      function fillWorkflow(config) {
+        const workflow = config.workflow;
+        for (const name of fields) {
+          document.getElementById(name).value = workflow[name];
+        }
+      }
+
+      function fillWorkbook(config, workbookInfo) {
+        workbookPathEl.value = config.workbook.filePath || "";
+        const currentSheet = config.workbook.sheetName || workbookInfo?.activeSheetName || "";
+        const sheetNames = workbookInfo?.sheetNames || [];
+
+        sheetNameEl.innerHTML = "";
+        if (sheetNames.length === 0) {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "先选择文件";
+          sheetNameEl.appendChild(option);
+          return;
+        }
+
+        for (const sheetName of sheetNames) {
+          const option = document.createElement("option");
+          option.value = sheetName;
+          option.textContent = sheetName;
+          option.selected = sheetName === currentSheet;
+          sheetNameEl.appendChild(option);
+        }
+      }
+
+      function readForm() {
+        return {
+          workbook: {
+            filePath: workbookPathEl.value.trim(),
+            sheetName: sheetNameEl.value
+          },
+          workflow: {
+            batchSize: Number(document.getElementById("batchSize").value),
+            resetConversationEveryRuns: Number(document.getElementById("resetConversationEveryRuns").value),
+            newConversationLimit: Number(document.getElementById("newConversationLimit").value),
+            startRow: Number(document.getElementById("startRow").value),
+            sourceColumn: document.getElementById("sourceColumn").value.trim().toUpperCase(),
+            targetColumn: document.getElementById("targetColumn").value.trim().toUpperCase()
+          }
+        };
+      }
+
+      function renderDerived(derived, status, config) {
+        document.getElementById("total-conversations").textContent = derived.totalConversations;
+        document.getElementById("total-runs").textContent = derived.totalRuns;
+        document.getElementById("total-rows").textContent = derived.totalRows;
+        document.getElementById("next-row").textContent = document.getElementById("startRow").value || "-";
+        logEl.textContent = (status.logLines || []).join("\n");
+        logEl.scrollTop = logEl.scrollHeight;
+        if (config) {
+          const workflow = config.workflow;
+          const workbook = config.workbook;
+          appliedSummaryEl.textContent =
+            `已确认参数：${workflow.sourceColumn} -> ${workflow.targetColumn}，起始行 ${workflow.startRow}，每批 ${workflow.batchSize} 行，每个对话 ${workflow.resetConversationEveryRuns} 轮，新对话上限 ${workflow.newConversationLimit}，工作表 ${workbook.sheetName || "未选"}。`;
+        }
+
+        const warnings = [];
+        if (status.missingBootstrap) {
+          warnings.push("还没完成 bootstrap。请先在终端运行 npm run bootstrap。");
+        }
+        if (status.missingWorkbook) {
+          warnings.push("还没选择工作簿文件。");
+        }
+        setWarning(warnings.join(" "));
+      }
+
+      async function refresh() {
+        const data = await fetchJson("/api/config");
+        fillWorkflow(data.config);
+        fillWorkbook(data.config, data.workbookInfo);
+        renderDerived(data.derived, data.status || {}, data.config);
+        setMessage(data.status && data.status.running ? "任务运行中" : "配置已加载");
+      }
+
+      document.getElementById("choose-file-btn").addEventListener("click", async () => {
+        try {
+          const data = await fetchJson("/api/choose-file", { method: "POST" });
+          fillWorkflow(data.config);
+          fillWorkbook(data.config, data.workbookInfo);
+          renderDerived(data.derived, data.status || {}, data.config);
+          setMessage("文件已选择");
+        } catch (error) {
+          setWarning(error.message);
+        }
+      });
+
+      document.getElementById("save-btn").addEventListener("click", async () => {
+        const data = await fetchJson("/api/config", {
+          method: "POST",
+          body: JSON.stringify(readForm())
+        });
+        fillWorkbook(data.config, data.workbookInfo);
+        renderDerived(data.derived, data.status || {}, data.config);
+        setMessage("配置已保存");
+      });
+
+      document.getElementById("apply-btn").addEventListener("click", async () => {
+        try {
+          const data = await fetchJson("/api/config", {
+            method: "POST",
+            body: JSON.stringify(readForm())
+          });
+          fillWorkflow(data.config);
+          fillWorkbook(data.config, data.workbookInfo);
+          renderDerived(data.derived, data.status || {}, data.config);
+          setMessage("参数已确认并已应用");
+        } catch (error) {
+          setWarning(error.message);
+        }
+      });
+
+      document.getElementById("run-btn").addEventListener("click", async () => {
+        try {
+          const saved = await fetchJson("/api/config", {
+            method: "POST",
+            body: JSON.stringify(readForm())
+          });
+          fillWorkflow(saved.config);
+          fillWorkbook(saved.config, saved.workbookInfo);
+          renderDerived(saved.derived, saved.status || {}, saved.config);
+          await fetchJson("/api/run", { method: "POST" });
+          setMessage("任务已启动");
+          await refreshStatusOnly();
+        } catch (error) {
+          setWarning(error.message);
+        }
+      });
+
+      document.getElementById("stop-btn").addEventListener("click", async () => {
+        await fetchJson("/api/stop", { method: "POST" });
+        setMessage("已请求停止");
+      });
+
+      async function refreshStatusOnly() {
+        const data = await fetchJson("/api/status");
+        const configData = await fetchJson("/api/config");
+        renderDerived(data.derived, data.status || {}, configData.config);
+      }
+
+      refresh().catch((error) => setWarning(error.message));
+      setInterval(() => {
+        refreshStatusOnly().catch((error) => setWarning(error.message));
+      }, 2000);
+    </script>
+  </body>
+</html>

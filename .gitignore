@@ -1,0 +1,5 @@
+node_modules
+.chrome-profile
+automation.config.json
+automation.state.json
+debug

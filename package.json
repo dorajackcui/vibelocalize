@@ -1,0 +1,13 @@
+{
+  "name": "chatgpt-wps-automation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bootstrap": "node scripts/chatgpt-wps-loop.mjs --bootstrap",
+    "run": "node scripts/chatgpt-wps-loop.mjs",
+    "ui": "node scripts/ui-server.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.54.0"
+  }
+}
