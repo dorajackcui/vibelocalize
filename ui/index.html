@@ -64,6 +64,18 @@
         font-size: 18px;
       }
 
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .panel-header h2 {
+        margin: 0;
+      }
+
       label {
         display: block;
         margin-bottom: 12px;
@@ -118,6 +130,40 @@
         background: #fff1f2;
         color: var(--danger);
         border: 1px solid #fecdd3;
+      }
+
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        border-radius: 12px;
+        background: #fff;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+      }
+
+      .icon-btn:hover {
+        background: #f8f3ea;
+        border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+        transform: translateY(-1px);
+      }
+
+      .icon-btn:active {
+        transform: translateY(0);
+      }
+
+      .icon-btn:focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--accent) 55%, white);
+        outline-offset: 2px;
+      }
+
+      .icon-btn svg {
+        width: 18px;
+        height: 18px;
       }
 
       .meta {
@@ -257,7 +303,21 @@
       </div>
 
       <section class="panel" style="margin-top: 16px;">
-        <h2>运行日志</h2>
+        <div class="panel-header">
+          <h2>运行日志</h2>
+          <button
+            class="icon-btn"
+            id="copy-log-btn"
+            type="button"
+            title="复制日志"
+            aria-label="复制运行日志"
+          >
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="9" y="9" width="10" height="10" rx="2" stroke="currentColor" stroke-width="1.8"></rect>
+              <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+            </svg>
+          </button>
+        </div>
         <pre id="log"></pre>
       </section>
     </div>
@@ -267,6 +327,7 @@
       const messageEl = document.getElementById("message");
       const warningEl = document.getElementById("warning");
       const logEl = document.getElementById("log");
+      const copyLogBtn = document.getElementById("copy-log-btn");
       const workbookPathEl = document.getElementById("workbookPath");
       const sheetNameEl = document.getElementById("sheetName");
       const appliedSummaryEl = document.getElementById("applied-summary");
@@ -290,6 +351,41 @@
       function setWarning(text) {
         warningEl.hidden = !text;
         warningEl.textContent = text || "";
+      }
+
+      async function copyText(text) {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) {
+          throw new Error("浏览器拒绝了复制请求");
+        }
+      }
+
+      function flashCopyButton(text) {
+        copyLogBtn.title = text;
+        copyLogBtn.setAttribute("aria-label", text);
+        clearTimeout(flashCopyButton.timer);
+        flashCopyButton.timer = window.setTimeout(() => {
+          copyLogBtn.title = "复制日志";
+          copyLogBtn.setAttribute("aria-label", "复制运行日志");
+        }, 1500);
+      }
+
+      function isLogPinnedToBottom() {
+        const distanceFromBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight;
+        return distanceFromBottom < 24;
       }
 
       function fillWorkflow(config) {
@@ -344,8 +440,14 @@
         document.getElementById("total-runs").textContent = derived.totalRuns;
         document.getElementById("total-rows").textContent = derived.totalRows;
         document.getElementById("next-row").textContent = document.getElementById("startRow").value || "-";
-        logEl.textContent = (status.logLines || []).join("\n");
-        logEl.scrollTop = logEl.scrollHeight;
+        const nextLogText = (status.logLines || []).join("\n");
+        if (nextLogText !== logEl.textContent) {
+          const shouldStickToBottom = isLogPinnedToBottom();
+          logEl.textContent = nextLogText;
+          if (shouldStickToBottom) {
+            logEl.scrollTop = logEl.scrollHeight;
+          }
+        }
         if (config) {
           const workflow = config.workflow;
           const workbook = config.workbook;
@@ -428,6 +530,24 @@
       document.getElementById("stop-btn").addEventListener("click", async () => {
         await fetchJson("/api/stop", { method: "POST" });
         setMessage("已请求停止");
+      });
+
+      copyLogBtn.addEventListener("click", async () => {
+        const text = logEl.textContent || "";
+        if (!text.trim()) {
+          setWarning("当前还没有可复制的日志。");
+          flashCopyButton("暂无日志");
+          return;
+        }
+
+        try {
+          await copyText(text);
+          setMessage("运行日志已复制到剪贴板");
+          flashCopyButton("已复制");
+        } catch (error) {
+          setWarning(`复制日志失败：${error.message}`);
+          flashCopyButton("复制失败");
+        }
       });
 
       async function refreshStatusOnly() {

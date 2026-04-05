@@ -373,6 +373,7 @@ async function runLoop({
   const limit = maxLoopsOverride ?? config.workflow.maxLoops;
   const runsPerConversation = config.workflow.resetConversationEveryRuns;
   const newConversationLimit = config.workflow.newConversationLimit;
+  const startedAt = Date.now();
 
   let currentRow = startRow;
   let loops = 0;
@@ -380,50 +381,134 @@ async function runLoop({
     typeof initialRunsInCurrentConversation === "number" ? initialRunsInCurrentConversation : 0;
   let newConversationsOpened =
     typeof initialNewConversationsOpened === "number" ? initialNewConversationsOpened : 0;
+  let lastCompletedRow = startRow - 1;
+  let stopReason = "completed";
 
-  while (true) {
-    if (limit > 0 && loops >= limit) {
-      console.log("Reached the max loop limit and stopped.");
-      break;
-    }
-
-    if (runsPerConversation > 0 && runsInCurrentConversation >= runsPerConversation) {
-      if (newConversationsOpened >= newConversationLimit) {
-        console.log("Reached the new conversation limit and stopped.");
+  try {
+    while (true) {
+      if (limit > 0 && loops >= limit) {
+        stopReason = "Reached the max loop limit";
+        console.log("Reached the max loop limit and stopped.");
         break;
       }
 
-      console.log("Opening a fresh chat in the same project.");
-      await openFreshProjectChat(page, config);
+      if (runsPerConversation > 0 && runsInCurrentConversation >= runsPerConversation) {
+        if (newConversationsOpened >= newConversationLimit) {
+          stopReason = "Reached the new conversation limit";
+          console.log("Reached the new conversation limit and stopped.");
+          break;
+        }
+
+        const nextConversationIndex = newConversationsOpened + 2;
+        console.log(
+          `Opening a fresh chat in the same project. Switching to conversation ${nextConversationIndex}/${getTotalConversations(config)}.`
+        );
+        await openFreshProjectChat(page, config);
+        await waitForComposer(page);
+        runsInCurrentConversation = 0;
+        newConversationsOpened += 1;
+      }
+
+      const values = await readWorkbookBatch(config, currentRow, batchSize);
+      if (config.workflow.stopWhenEntireBatchEmpty && values.every((item) => item.trim() === "")) {
+        stopReason = "The whole batch is empty";
+        console.log("The whole batch is empty. Stopping here.");
+        break;
+      }
+
+      console.log(
+        [
+          `Conversation ${getCurrentConversationIndex(newConversationsOpened)}/${getTotalConversations(config)}`,
+          `round ${getCurrentConversationRoundIndex(runsInCurrentConversation)}/${config.workflow.resetConversationEveryRuns}`,
+          `overall ${getOverallRunIndex(loops)}/${getTotalRuns(config)}`,
+          `sending ${config.workflow.sourceColumn}${currentRow}:${config.workflow.sourceColumn}${currentRow + batchSize - 1} to ChatGPT.`
+        ].join(" | ")
+      );
+
+      const prompt = values.join("\n");
       await waitForComposer(page);
-      runsInCurrentConversation = 0;
-      newConversationsOpened += 1;
+      const responseText = isProjectHomeUrl(page.url(), config.chatgpt.projectUrl)
+        ? await sendPromptWithFreshChatRecovery(page, prompt, config)
+        : await sendPromptInCurrentChatAndWaitForResponse(page, prompt, config.workflow);
+      const outputMatrix = parseAssistantResponseToMatrix(responseText, config.response);
+
+      await writeWorkbookBatch(config, currentRow, outputMatrix);
+      console.log(
+        `Wrote a ${outputMatrix.length}x${Math.max(...outputMatrix.map((row) => row.length), 0)} block starting at ${config.workflow.targetColumn}${currentRow}.`
+      );
+
+      lastCompletedRow = currentRow + batchSize - 1;
+      currentRow += batchSize;
+      loops += 1;
+      runsInCurrentConversation += 1;
     }
-
-    const values = await readWorkbookBatch(config, currentRow, batchSize);
-    if (config.workflow.stopWhenEntireBatchEmpty && values.every((item) => item.trim() === "")) {
-      console.log("The whole batch is empty. Stopping here.");
-      break;
-    }
-
-    console.log(
-      `Sending ${config.workflow.sourceColumn}${currentRow}:${config.workflow.sourceColumn}${currentRow + batchSize - 1} to ChatGPT.`
-    );
-
-    const prompt = values.join("\n");
-    await waitForComposer(page);
-    const responseText = await sendPromptAndWaitForResponse(page, prompt, config.workflow);
-    const outputMatrix = parseAssistantResponseToMatrix(responseText, config.response);
-
-    await writeWorkbookBatch(config, currentRow, outputMatrix);
-    console.log(
-      `Wrote a ${outputMatrix.length}x${Math.max(...outputMatrix.map((row) => row.length), 0)} block starting at ${config.workflow.targetColumn}${currentRow}.`
-    );
-
-    currentRow += batchSize;
-    loops += 1;
-    runsInCurrentConversation += 1;
+  } catch (error) {
+    stopReason = `Stopped with error: ${error.message}`;
+    throw error;
+  } finally {
+    console.log(buildRunSummary({
+      startRow,
+      lastCompletedRow,
+      sourceColumn: config.workflow.sourceColumn,
+      targetColumn: config.workflow.targetColumn,
+      loops,
+      totalRuns: getTotalRuns(config),
+      elapsedMs: Date.now() - startedAt,
+      stopReason
+    }));
   }
+}
+
+function getTotalConversations(config) {
+  return config.workflow.newConversationLimit + 1;
+}
+
+function getTotalRuns(config) {
+  return getTotalConversations(config) * config.workflow.resetConversationEveryRuns;
+}
+
+function getCurrentConversationIndex(newConversationsOpened) {
+  return newConversationsOpened + 1;
+}
+
+function getCurrentConversationRoundIndex(runsInCurrentConversation) {
+  return runsInCurrentConversation + 1;
+}
+
+function getOverallRunIndex(loops) {
+  return loops + 1;
+}
+
+function buildRunSummary({ startRow, lastCompletedRow, sourceColumn, targetColumn, loops, totalRuns, elapsedMs, stopReason }) {
+  const rowSummary = lastCompletedRow >= startRow
+    ? `${sourceColumn}${startRow} -> ${sourceColumn}${lastCompletedRow}`
+    : `none completed from ${sourceColumn}${startRow}`;
+
+  return [
+    "Run summary:",
+    `rows translated ${rowSummary}`,
+    `target column ${targetColumn}`,
+    `completed rounds ${loops}/${totalRuns}`,
+    `elapsed ${formatDuration(elapsedMs)}`,
+    `stop reason ${stopReason}`
+  ].join(" | ");
+}
+
+function formatDuration(elapsedMs) {
+  const totalSeconds = Math.max(0, Math.round(elapsedMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const parts = [];
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0 || hours > 0) {
+    parts.push(`${minutes}m`);
+  }
+  parts.push(`${seconds}s`);
+  return parts.join(" ");
 }
 
 async function readWorkbookBatch(config, startRow, batchSize) {
@@ -474,15 +559,28 @@ async function waitForComposer(page) {
 async function sendPromptAndWaitForResponse(page, prompt, workflow) {
   const composerSelector = await waitForComposer(page);
   const assistantLocator = page.locator("[data-message-author-role='assistant']");
+  const userLocator = page.locator("[data-message-author-role='user']");
   const initialCount = await assistantLocator.count();
+  const initialUserCount = await userLocator.count();
+  const initialUrl = page.url();
 
   await page.locator(composerSelector).first().click();
   await page.keyboard.insertText(prompt);
   await page.keyboard.press("Enter");
 
+  return {
+    initialAssistantCount: initialCount,
+    initialUserCount,
+    initialUrl
+  };
+}
+
+async function sendPromptInCurrentChatAndWaitForResponse(page, prompt, workflow) {
+  const { initialAssistantCount } = await sendPromptAndWaitForResponse(page, prompt, workflow);
+
   await page.waitForFunction(
     (count) => document.querySelectorAll("[data-message-author-role='assistant']").length > count,
-    initialCount,
+    initialAssistantCount,
     { timeout: workflow.responseTimeoutMs }
   );
 
@@ -543,6 +641,80 @@ async function openFreshProjectChat(page, config) {
   );
 }
 
+async function sendPromptWithFreshChatRecovery(page, prompt, config) {
+  const maxAttempts = 3;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const promptState = await sendPromptAndWaitForResponse(page, prompt, config.workflow);
+
+      await waitForFreshConversationCreation(page, config, promptState);
+
+      await page.waitForFunction(
+        (count) => document.querySelectorAll("[data-message-author-role='assistant']").length > count,
+        promptState.initialAssistantCount,
+        { timeout: config.workflow.responseTimeoutMs }
+      );
+
+      return await waitForStableAssistantMessage(page, config.workflow);
+    } catch (error) {
+      lastError = error;
+      if (error.code !== "FRESH_CHAT_CREATION_FAILED" || attempt >= maxAttempts) {
+        throw error;
+      }
+
+      console.log(
+        `Fresh project chat was not created successfully. Returning to the project page and retrying (${attempt + 1}/${maxAttempts}).`
+      );
+      await resetToProjectPage(page, config);
+    }
+  }
+
+  throw lastError;
+}
+
+async function waitForFreshConversationCreation(page, config, promptState) {
+  const timeoutMs = Math.min(config.workflow.responseTimeoutMs, 15000);
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const currentUrl = page.url();
+    const userCount = await page.locator("[data-message-author-role='user']").count();
+    const assistantCount = await page.locator("[data-message-author-role='assistant']").count();
+
+    if (isConversationUrl(currentUrl, config.chatgpt.projectUrl)) {
+      return;
+    }
+
+    if (userCount > promptState.initialUserCount || assistantCount > promptState.initialAssistantCount) {
+      return;
+    }
+
+    if (normalizeComparableUrl(currentUrl) !== normalizeComparableUrl(promptState.initialUrl) && !isProjectHomeUrl(currentUrl, config.chatgpt.projectUrl)) {
+      return;
+    }
+
+    await page.waitForTimeout(500);
+  }
+
+  const debugPath = path.join(DEBUG_DIR, `fresh-chat-create-failed-${Date.now()}.png`);
+  await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
+  const error = new Error(
+    `Timed out while waiting for a fresh project chat to be created. Screenshot saved to ${debugPath}`
+  );
+  error.code = "FRESH_CHAT_CREATION_FAILED";
+  throw error;
+}
+
+async function resetToProjectPage(page, config) {
+  await page.goto(config.chatgpt.projectUrl, { waitUntil: "domcontentloaded" });
+  await page.reload({ waitUntil: "domcontentloaded" }).catch(() => null);
+  await page.waitForTimeout(1500);
+  await openFreshProjectChat(page, config);
+  await waitForComposer(page);
+}
+
 async function waitForStableAssistantMessage(page, workflow) {
   const start = Date.now();
   let previousText = "";
@@ -585,6 +757,24 @@ async function hasVisibleComposer(page) {
   }
 
   return false;
+}
+
+function normalizeComparableUrl(rawUrl) {
+  const url = new URL(rawUrl);
+  return `${url.origin}${url.pathname.replace(/\/+$/, "") || "/"}`;
+}
+
+function isProjectHomeUrl(rawUrl, projectUrl) {
+  return normalizeComparableUrl(rawUrl) === normalizeComparableUrl(projectUrl);
+}
+
+function isConversationUrl(rawUrl, projectUrl) {
+  const url = new URL(rawUrl);
+  const project = new URL(projectUrl);
+  const parts = url.pathname.split("/").filter(Boolean);
+  const projectParts = project.pathname.split("/").filter(Boolean);
+
+  return parts.length >= 4 && parts[0] === "g" && parts[1] === projectParts[1] && parts[2] === "c";
 }
 
 async function getLatestAssistantText(page) {
