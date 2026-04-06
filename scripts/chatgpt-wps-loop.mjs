@@ -383,6 +383,7 @@ async function runLoop({
     typeof initialNewConversationsOpened === "number" ? initialNewConversationsOpened : 0;
   let lastCompletedRow = startRow - 1;
   let stopReason = "completed";
+  const reviewFindings = [];
 
   try {
     while (true) {
@@ -431,6 +432,23 @@ async function runLoop({
         ? await sendPromptWithFreshChatRecovery(page, prompt, config)
         : await sendPromptInCurrentChatAndWaitForResponse(page, prompt, config.workflow);
       const outputMatrix = parseAssistantResponseToMatrix(responseText, config.response);
+      const reviewFinding = buildBatchRowCountFinding({
+        config,
+        startRow: currentRow,
+        sourceValues: values,
+        rawResponseText: responseText,
+        outputMatrix
+      });
+      if (reviewFinding) {
+        reviewFindings.push(reviewFinding);
+        console.log(
+          [
+            `Review required for ${reviewFinding.sourceRange}.`,
+            `Expected ${reviewFinding.expectedRowCount} rows but got ${reviewFinding.actualRowCount}.`,
+            "The result was still written back and recorded in the review report."
+          ].join(" ")
+        );
+      }
 
       await writeWorkbookBatch(config, currentRow, outputMatrix);
       console.log(
@@ -446,6 +464,24 @@ async function runLoop({
     stopReason = `Stopped with error: ${error.message}`;
     throw error;
   } finally {
+    const elapsedMs = Date.now() - startedAt;
+    let reviewReportPath = "";
+
+    try {
+      reviewReportPath = await writeReviewReport({
+        config,
+        startRow,
+        lastCompletedRow,
+        loops,
+        totalRuns: getTotalRuns(config),
+        elapsedMs,
+        stopReason,
+        reviewFindings
+      });
+    } catch (reviewError) {
+      console.log(`Could not write review report: ${reviewError.message}`);
+    }
+
     console.log(buildRunSummary({
       startRow,
       lastCompletedRow,
@@ -453,8 +489,10 @@ async function runLoop({
       targetColumn: config.workflow.targetColumn,
       loops,
       totalRuns: getTotalRuns(config),
-      elapsedMs: Date.now() - startedAt,
-      stopReason
+      elapsedMs,
+      stopReason,
+      reviewFindings,
+      reviewReportPath
     }));
   }
 }
@@ -479,19 +517,37 @@ function getOverallRunIndex(loops) {
   return loops + 1;
 }
 
-function buildRunSummary({ startRow, lastCompletedRow, sourceColumn, targetColumn, loops, totalRuns, elapsedMs, stopReason }) {
+function buildRunSummary({
+  startRow,
+  lastCompletedRow,
+  sourceColumn,
+  targetColumn,
+  loops,
+  totalRuns,
+  elapsedMs,
+  stopReason,
+  reviewFindings,
+  reviewReportPath
+}) {
   const rowSummary = lastCompletedRow >= startRow
     ? `${sourceColumn}${startRow} -> ${sourceColumn}${lastCompletedRow}`
     : `none completed from ${sourceColumn}${startRow}`;
 
-  return [
+  const parts = [
     "Run summary:",
     `rows translated ${rowSummary}`,
     `target column ${targetColumn}`,
     `completed rounds ${loops}/${totalRuns}`,
     `elapsed ${formatDuration(elapsedMs)}`,
-    `stop reason ${stopReason}`
-  ].join(" | ");
+    `stop reason ${stopReason}`,
+    `review items ${reviewFindings.length}`
+  ];
+
+  if (reviewReportPath) {
+    parts.push(`review report ${reviewReportPath}`);
+  }
+
+  return parts.join(" | ");
 }
 
 function formatDuration(elapsedMs) {
@@ -865,10 +921,12 @@ function coerceMatrix(items) {
 }
 
 function parseDelimitedBlock(text) {
-  return text
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) => line.split("\t"));
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\n+$/g, "");
+  if (!normalized) {
+    return [];
+  }
+
+  return normalized.split("\n").map((line) => line.split("\t"));
 }
 
 function normalizeAssistantForPaste(rawText, responseConfig) {
@@ -929,6 +987,78 @@ function deriveProjectUrl(rawUrl) {
   }
 
   throw new Error(`Could not derive project URL from ${rawUrl}`);
+}
+
+function buildBatchRowCountFinding({ config, startRow, sourceValues, rawResponseText, outputMatrix }) {
+  const expectedRowCount = sourceValues.length;
+  const actualRowCount = outputMatrix.length;
+
+  if (actualRowCount === expectedRowCount) {
+    return null;
+  }
+
+  const endRow = startRow + expectedRowCount - 1;
+  return {
+    recordedAt: new Date().toISOString(),
+    reason: "row_count_mismatch",
+    sourceRange: `${config.workflow.sourceColumn}${startRow}:${config.workflow.sourceColumn}${endRow}`,
+    workbook: {
+      filePath: config.workbook.filePath,
+      sheetName: config.workbook.sheetName
+    },
+    workflow: {
+      sourceColumn: config.workflow.sourceColumn,
+      targetColumn: config.workflow.targetColumn,
+      startRow,
+      endRow
+    },
+    expectedRowCount,
+    actualRowCount,
+    sourceValues,
+    outputMatrix,
+    rawResponseText
+  };
+}
+
+async function writeReviewReport({
+  config,
+  startRow,
+  lastCompletedRow,
+  loops,
+  totalRuns,
+  elapsedMs,
+  stopReason,
+  reviewFindings
+}) {
+  await fs.mkdir(DEBUG_DIR, { recursive: true });
+  const reportPath = path.join(DEBUG_DIR, `review-report-${Date.now()}.json`);
+  const reportPayload = {
+    createdAt: new Date().toISOString(),
+    workbook: {
+      filePath: config.workbook.filePath,
+      sheetName: config.workbook.sheetName
+    },
+    workflow: {
+      sourceColumn: config.workflow.sourceColumn,
+      targetColumn: config.workflow.targetColumn,
+      startRow,
+      batchSize: config.workflow.batchSize,
+      resetConversationEveryRuns: config.workflow.resetConversationEveryRuns,
+      newConversationLimit: config.workflow.newConversationLimit
+    },
+    summary: {
+      lastCompletedRow,
+      completedRounds: loops,
+      totalRuns,
+      elapsedMs,
+      stopReason,
+      reviewItemCount: reviewFindings.length
+    },
+    reviewFindings
+  };
+
+  await fs.writeFile(reportPath, `${JSON.stringify(reportPayload, null, 2)}\n`, "utf8");
+  return reportPath;
 }
 
 async function runCommandWithInput(command, args, inputText) {
