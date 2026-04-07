@@ -1,8 +1,6 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import process from "node:process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { openUrlInBrowser } from "./runtime-platform.mjs";
 const UI_URL = "http://127.0.0.1:4312";
 
 async function main() {
@@ -26,8 +24,12 @@ async function main() {
 
   const ready = await waitForUiServer(15000);
   if (ready) {
-    await openUiInBrowser();
-    console.log(`Opened ${UI_URL}`);
+    try {
+      const opened = await openUiInBrowser();
+      console.log(opened ? `Opened ${UI_URL}` : `UI is ready at ${UI_URL}`);
+    } catch (error) {
+      console.warn(`UI is ready at ${UI_URL}, but it could not be opened automatically: ${error.message}`);
+    }
   } else {
     console.warn(`UI did not become ready within 15s. You can open ${UI_URL} manually.`);
   }
@@ -53,11 +55,7 @@ async function waitForUiServer(timeoutMs) {
 }
 
 async function openUiInBrowser() {
-  if (process.platform !== "darwin") {
-    return;
-  }
-
-  await execFileAsync("open", [UI_URL]);
+  return openUrlInBrowser(UI_URL);
 }
 
 function sleep(ms) {

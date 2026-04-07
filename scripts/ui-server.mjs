@@ -2,10 +2,8 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import process from "node:process";
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { spawn } from "node:child_process";
+import { chooseWorkbookFile as chooseWorkbookFileWithDialog, getPythonCommand } from "./runtime-platform.mjs";
 
 const ROOT = process.cwd();
 const CONFIG_PATH = path.join(ROOT, "automation.config.json");
@@ -88,7 +86,21 @@ function startServer() {
       }
 
       if (req.method === "POST" && url.pathname === "/api/choose-file") {
-        const filePath = await chooseWorkbookFile();
+        let filePath = "";
+        try {
+          filePath = await chooseWorkbookFile();
+        } catch (error) {
+          if (
+            error.code === "FILE_SELECTION_CANCELLED" ||
+            error.code === "INVALID_WORKBOOK_SELECTION" ||
+            error.code === "FILE_SELECTION_UNSUPPORTED"
+          ) {
+            return respondJson(res, 400, { error: error.message });
+          }
+
+          throw error;
+        }
+
         const existing = await loadOrCreateConfig();
         const workbookInfo = await getWorkbookInfo(filePath);
         const nextConfig = normalizeConfig(
@@ -313,29 +325,21 @@ function appendLog(text) {
 }
 
 async function chooseWorkbookFile() {
-  const { stdout } = await execFileAsync("osascript", [
-    "-e",
-    'POSIX path of (choose file with prompt "Select workbook (.xlsx or .xlsm)")'
-  ], {
-    cwd: ROOT
-  });
-
-  const filePath = stdout.trim();
-  const ext = path.extname(filePath).toLowerCase();
-
-  if (![".xlsx", ".xlsm"].includes(ext)) {
-    throw new Error("Please choose an .xlsx or .xlsm workbook.");
-  }
-
-  return filePath;
+  return chooseWorkbookFileWithDialog({ cwd: ROOT });
 }
 
 async function getWorkbookInfo(filePath) {
-  const stdout = await runCommandWithInput("python3", [WORKBOOK_HELPER, "info"], JSON.stringify({ filePath }));
+  const pythonCommand = await getPythonCommand();
+  const stdout = await runCommandWithInput(
+    pythonCommand.command,
+    [...pythonCommand.args, WORKBOOK_HELPER, "info"],
+    JSON.stringify({ filePath }),
+    pythonCommand.displayName
+  );
   return JSON.parse(stdout);
 }
 
-function runCommandWithInput(command, args, inputText) {
+function runCommandWithInput(command, args, inputText, commandDisplay = command) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -356,7 +360,7 @@ function runCommandWithInput(command, args, inputText) {
         return;
       }
 
-      reject(new Error(`${command} exited with code ${code}: ${stderr.trim()}`));
+      reject(new Error(`${commandDisplay} exited with code ${code}: ${stderr.trim()}`));
     });
 
     child.stdin.write(inputText);

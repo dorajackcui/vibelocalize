@@ -226,7 +226,7 @@
           <h2>文件</h2>
           <label>
             Workbook Path
-            <input id="workbookPath" type="text" readonly placeholder="还没选择文件">
+            <input id="workbookPath" type="text" placeholder="可点“选择文件”，也可直接粘贴 Excel 路径">
           </label>
           <label>
             Sheet
@@ -236,6 +236,7 @@
             <button class="secondary" id="choose-file-btn" type="button">选择文件</button>
             <button class="primary" id="save-btn" type="button">保存配置</button>
           </div>
+          <div class="hint">如果 Windows 文件弹窗没有正常返回，可以直接把 `.xlsx` 或 `.xlsm` 的完整路径粘贴到上面的输入框，再点“保存配置”。</div>
           <div class="hint" id="message">加载中…</div>
           <div class="warning" id="warning" hidden></div>
         </section>
@@ -486,13 +487,17 @@
       });
 
       document.getElementById("save-btn").addEventListener("click", async () => {
-        const data = await fetchJson("/api/config", {
-          method: "POST",
-          body: JSON.stringify(readForm())
-        });
-        fillWorkbook(data.config, data.workbookInfo);
-        renderDerived(data.derived, data.status || {}, data.config);
-        setMessage("配置已保存");
+        try {
+          const data = await fetchJson("/api/config", {
+            method: "POST",
+            body: JSON.stringify(readForm())
+          });
+          fillWorkbook(data.config, data.workbookInfo);
+          renderDerived(data.derived, data.status || {}, data.config);
+          setMessage("配置已保存");
+        } catch (error) {
+          setWarning(error.message);
+        }
       });
 
       document.getElementById("apply-btn").addEventListener("click", async () => {

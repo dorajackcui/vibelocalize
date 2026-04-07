@@ -3,11 +3,13 @@ import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { chromium } from "playwright";
-
-const execFileAsync = promisify(execFile);
+import {
+  buildManualChromeDebuggingCommand,
+  getPythonCommand,
+  launchChromeWithDebugPort
+} from "./runtime-platform.mjs";
 
 const ROOT = process.cwd();
 const CONFIG_PATH = path.join(ROOT, "automation.config.json");
@@ -47,6 +49,12 @@ const DEFAULT_CONFIG = {
     stripCodeFences: true
   }
 };
+
+const COMPOSER_SELECTORS = [
+  "#prompt-textarea",
+  "textarea[placeholder]",
+  "div[contenteditable='true']"
+];
 
 const rl = readline.createInterface({ input, output });
 
@@ -220,34 +228,22 @@ async function ensureChromeDebugPort(config) {
     return;
   }
 
-  if (process.platform !== "darwin") {
-    throw new Error(
-      [
-        `Could not reach Chrome remote debugging at ${debugUrl}.`,
-        "Auto-launch is only implemented for macOS right now.",
-        `Please start Chrome manually with --remote-debugging-port=${config.browser.debugPort} and retry.`
-      ].join(" ")
-    );
-  }
-
   const userDataDir = path.resolve(ROOT, config.browser.userDataDir);
   await fs.mkdir(userDataDir, { recursive: true });
 
   console.log(`Chrome debug port ${config.browser.debugPort} is not ready. Launching Google Chrome for you...`);
-  await execFileAsync("open", [
-    "-na",
-    "Google Chrome",
-    "--args",
-    `--remote-debugging-port=${config.browser.debugPort}`,
-    `--user-data-dir=${userDataDir}`
-  ]);
+  const launchInfo = await launchChromeWithDebugPort({
+    debugPort: config.browser.debugPort,
+    userDataDir
+  });
 
-  const ready = await waitForChromeDebugPort(debugUrl, 15000);
+  const ready = await waitForChromeDebugPort(debugUrl, 30000);
   if (!ready) {
     throw new Error(
       [
-        `Google Chrome was launched, but the remote debugging port ${config.browser.debugPort} did not become available in time.`,
-        "Make sure Chrome is installed and retry."
+        `${launchInfo.browserName} was launched, but the remote debugging port ${config.browser.debugPort} did not become available in time.`,
+        "Make sure Chrome is installed and retry.",
+        `If needed, start Chrome manually with: ${launchInfo.manualCommand ?? buildManualChromeDebuggingCommand({ debugPort: config.browser.debugPort, userDataDir })}`
       ].join(" ")
     );
   }
@@ -590,37 +586,34 @@ async function writeWorkbookBatch(config, startRow, matrix) {
 }
 
 async function runWorkbookHelper(command, payload) {
-  const stdout = await runCommandWithInput("python3", [WORKBOOK_HELPER, command], JSON.stringify(payload));
+  const pythonCommand = await getPythonCommand();
+  const stdout = await runCommandWithInput(
+    pythonCommand.command,
+    [...pythonCommand.args, WORKBOOK_HELPER, command],
+    JSON.stringify(payload),
+    pythonCommand.displayName
+  );
   return JSON.parse(stdout);
 }
 
 async function waitForComposer(page) {
-  const selectors = [
-    "#prompt-textarea",
-    "textarea[placeholder]",
-    "div[contenteditable='true']"
-  ];
-
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    if ((await locator.count()) > 0) {
-      await locator.waitFor({ state: "visible", timeout: 30000 });
-      return selector;
-    }
+  const composer = await findVisibleComposer(page, 30000);
+  if (composer) {
+    return composer;
   }
 
   throw new Error("Could not find the ChatGPT composer.");
 }
 
 async function sendPromptAndWaitForResponse(page, prompt, workflow) {
-  const composerSelector = await waitForComposer(page);
+  const composerLocator = await waitForComposer(page);
   const assistantLocator = page.locator("[data-message-author-role='assistant']");
   const userLocator = page.locator("[data-message-author-role='user']");
   const initialCount = await assistantLocator.count();
   const initialUserCount = await userLocator.count();
   const initialUrl = page.url();
 
-  await page.locator(composerSelector).first().click();
+  await composerLocator.click();
   await page.keyboard.insertText(prompt);
   await page.keyboard.press("Enter");
 
@@ -649,10 +642,39 @@ async function openFreshProjectChat(page, config) {
   }
 
   await page.goto(config.chatgpt.projectUrl, { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(1000);
 
-  if (await hasVisibleComposer(page)) {
+  if (await hasVisibleComposer(page, 8000)) {
     return;
+  }
+
+  const projectComposerSelectors = [
+    "#prompt-textarea",
+    "textarea[placeholder*='新聊天']",
+    "textarea[aria-label*='新聊天']",
+    "[role='textbox'][aria-label*='新聊天']",
+    "[contenteditable='true'][aria-label*='新聊天']",
+    "main textarea[placeholder]",
+    "main [role='textbox'][aria-label]",
+    "main div[contenteditable='true']"
+  ];
+
+  for (const selector of projectComposerSelectors) {
+    const locator = page.locator(selector);
+    const count = await locator.count();
+
+    for (let index = 0; index < count; index += 1) {
+      const candidate = locator.nth(index);
+      if (!(await candidate.isVisible().catch(() => false))) {
+        continue;
+      }
+
+      await candidate.click({ timeout: 3000 }).catch(() => null);
+      await page.waitForTimeout(800);
+      if (await hasVisibleComposer(page, 3000) || isConversationUrl(page.url(), config.chatgpt.projectUrl)) {
+        return;
+      }
+    }
   }
 
   const selectors = [
@@ -798,21 +820,32 @@ async function waitForStableAssistantMessage(page, workflow) {
   throw new Error(`Timed out while waiting for ChatGPT. Screenshot saved to ${debugPath}`);
 }
 
-async function hasVisibleComposer(page) {
-  const selectors = [
-    "#prompt-textarea",
-    "textarea[placeholder]",
-    "div[contenteditable='true']"
-  ];
+async function hasVisibleComposer(page, timeoutMs = 0) {
+  return Boolean(await findVisibleComposer(page, timeoutMs));
+}
 
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    if ((await locator.count()) > 0 && (await locator.isVisible().catch(() => false))) {
-      return true;
+async function findVisibleComposer(page, timeoutMs = 0) {
+  const startedAt = Date.now();
+
+  do {
+    for (const selector of COMPOSER_SELECTORS) {
+      const locator = page.locator(selector);
+      const count = await locator.count();
+
+      for (let index = 0; index < count; index += 1) {
+        const candidate = locator.nth(index);
+        if (await candidate.isVisible().catch(() => false)) {
+          return candidate;
+        }
+      }
     }
-  }
 
-  return false;
+    if (timeoutMs <= 0 || Date.now() - startedAt >= timeoutMs) {
+      return null;
+    }
+
+    await page.waitForTimeout(250);
+  } while (true);
 }
 
 function normalizeComparableUrl(rawUrl) {
@@ -1061,7 +1094,7 @@ async function writeReviewReport({
   return reportPath;
 }
 
-async function runCommandWithInput(command, args, inputText) {
+async function runCommandWithInput(command, args, inputText, commandDisplay = command) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -1082,7 +1115,7 @@ async function runCommandWithInput(command, args, inputText) {
         return;
       }
 
-      reject(new Error(`${command} exited with code ${code}: ${stderr.trim()}`));
+      reject(new Error(`${commandDisplay} exited with code ${code}: ${stderr.trim()}`));
     });
 
     child.stdin.write(inputText);

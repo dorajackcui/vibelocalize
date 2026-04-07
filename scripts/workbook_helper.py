@@ -7,11 +7,13 @@ from openpyxl import load_workbook
 
 
 def main() -> None:
+    configure_stdio()
+
     if len(sys.argv) != 2:
         raise SystemExit("Usage: workbook_helper.py <info|read-batch|write-batch>")
 
     command = sys.argv[1]
-    payload = json.load(sys.stdin)
+    payload = read_json_from_stdin()
 
     if command == "info":
         print_json(get_workbook_info(payload))
@@ -99,6 +101,19 @@ def pick_sheet(workbook, sheet_name: str):
 
 def print_json(payload: dict) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+
+
+def configure_stdio() -> None:
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
+
+def read_json_from_stdin() -> dict:
+    return json.loads(sys.stdin.read())
 
 
 def column_letter_to_index(column: str) -> int:
