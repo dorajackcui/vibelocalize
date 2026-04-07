@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from tempfile import NamedTemporaryFile
 from pathlib import Path
 
@@ -61,6 +62,8 @@ def read_batch(payload: dict) -> dict:
 
 def write_batch(payload: dict) -> dict:
     workbook = open_workbook(payload["filePath"])
+    temp_path: Path | None = None
+    workbook_closed = False
     try:
         sheet = pick_sheet(workbook, payload.get("sheetName"))
         column = payload["column"]
@@ -81,10 +84,16 @@ def write_batch(payload: dict) -> dict:
             temp_path = Path(handle.name)
 
         workbook.save(temp_path)
-        temp_path.replace(target_path)
+        workbook.close()
+        workbook_closed = True
+
+        replace_with_retry(temp_path, target_path)
         return {"writtenRows": len(matrix)}
     finally:
-        workbook.close()
+        if not workbook_closed:
+            workbook.close()
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
 
 
 def open_workbook(file_path: str):
@@ -97,6 +106,26 @@ def pick_sheet(workbook, sheet_name: str):
     if sheet_name:
         return workbook[sheet_name]
     return workbook.active
+
+
+def replace_with_retry(temp_path: Path, target_path: Path) -> None:
+    delays = [0.0, 0.2, 0.5, 1.0, 2.0, 4.0]
+    last_error: PermissionError | None = None
+
+    for delay in delays:
+        if delay > 0:
+            time.sleep(delay)
+
+        try:
+            temp_path.replace(target_path)
+            return
+        except PermissionError as error:
+            last_error = error
+
+    raise PermissionError(
+        "Could not replace the workbook file after multiple retries. "
+        f"Make sure '{target_path}' is not open in Excel/WPS and is not being watched by memoQ, sync software, antivirus, or Explorer preview."
+    ) from last_error
 
 
 def print_json(payload: dict) -> None:
