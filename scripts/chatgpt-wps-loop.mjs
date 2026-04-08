@@ -516,7 +516,6 @@ async function runLoop({
         config,
         startRow: currentRow,
         sourceValues: values,
-        rawResponseText: responseText,
         outputMatrix
       });
       if (reviewFinding) {
@@ -1134,7 +1133,7 @@ function deriveProjectUrlSafe(rawUrl) {
   }
 }
 
-function buildBatchRowCountFinding({ config, startRow, sourceValues, rawResponseText, outputMatrix }) {
+function buildBatchRowCountFinding({ config, startRow, sourceValues, outputMatrix }) {
   const expectedRowCount = sourceValues.length;
   const actualRowCount = outputMatrix.length;
 
@@ -1145,8 +1144,11 @@ function buildBatchRowCountFinding({ config, startRow, sourceValues, rawResponse
   const endRow = startRow + expectedRowCount - 1;
   return {
     recordedAt: new Date().toISOString(),
-    reason: "row_count_mismatch",
+    issueType: "row_count_mismatch",
+    issueMessage: "Returned row count does not match the input batch row count.",
     sourceRange: `${config.workflow.sourceColumn}${startRow}:${config.workflow.sourceColumn}${endRow}`,
+    rowStart: startRow,
+    rowEnd: endRow,
     workbook: {
       filePath: config.workbook.filePath,
       sheetName: config.workbook.sheetName
@@ -1158,10 +1160,7 @@ function buildBatchRowCountFinding({ config, startRow, sourceValues, rawResponse
       endRow
     },
     expectedRowCount,
-    actualRowCount,
-    sourceValues,
-    outputMatrix,
-    rawResponseText
+    actualRowCount
   };
 }
 
@@ -1177,6 +1176,7 @@ async function writeReviewReport({
 }) {
   await fs.mkdir(DEBUG_DIR, { recursive: true });
   const reportPath = path.join(DEBUG_DIR, `review-report-${Date.now()}.json`);
+  const reviewCountsByType = countReviewFindingsByType(reviewFindings);
   const reportPayload = {
     createdAt: new Date().toISOString(),
     workbook: {
@@ -1197,13 +1197,22 @@ async function writeReviewReport({
       totalRuns,
       elapsedMs,
       stopReason,
-      reviewItemCount: reviewFindings.length
+      reviewItemCount: reviewFindings.length,
+      reviewCountsByType
     },
     reviewFindings
   };
 
   await fs.writeFile(reportPath, `${JSON.stringify(reportPayload, null, 2)}\n`, "utf8");
   return reportPath;
+}
+
+function countReviewFindingsByType(reviewFindings) {
+  return reviewFindings.reduce((counts, finding) => {
+    const issueType = finding.issueType || "unknown";
+    counts[issueType] = (counts[issueType] || 0) + 1;
+    return counts;
+  }, {});
 }
 
 async function runCommandWithInput(command, args, inputText, commandDisplay = command) {
