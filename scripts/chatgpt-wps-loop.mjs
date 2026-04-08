@@ -1145,22 +1145,11 @@ function buildBatchRowCountFinding({ config, startRow, sourceValues, outputMatri
   return {
     recordedAt: new Date().toISOString(),
     issueType: "row_count_mismatch",
-    issueMessage: "Returned row count does not match the input batch row count.",
     sourceRange: `${config.workflow.sourceColumn}${startRow}:${config.workflow.sourceColumn}${endRow}`,
-    rowStart: startRow,
-    rowEnd: endRow,
-    workbook: {
-      filePath: config.workbook.filePath,
-      sheetName: config.workbook.sheetName
-    },
-    workflow: {
-      sourceColumn: config.workflow.sourceColumn,
-      targetColumn: config.workflow.targetColumn,
-      startRow,
-      endRow
-    },
+    targetStartCell: `${config.workflow.targetColumn}${startRow}`,
     expectedRowCount,
-    actualRowCount
+    actualRowCount,
+    rowDelta: actualRowCount - expectedRowCount
   };
 }
 
@@ -1183,24 +1172,30 @@ async function writeReviewReport({
       filePath: config.workbook.filePath,
       sheetName: config.workbook.sheetName
     },
-    workflow: {
+    run: {
       sourceColumn: config.workflow.sourceColumn,
       targetColumn: config.workflow.targetColumn,
       startRow,
-      batchSize: config.workflow.batchSize,
-      resetConversationEveryRuns: config.workflow.resetConversationEveryRuns,
-      newConversationLimit: config.workflow.newConversationLimit
-    },
-    summary: {
       lastCompletedRow,
+      batchSize: config.workflow.batchSize,
       completedRounds: loops,
       totalRuns,
       elapsedMs,
-      stopReason,
-      reviewItemCount: reviewFindings.length,
-      reviewCountsByType
+      stopReason
     },
-    reviewFindings
+    review: {
+      totalItems: reviewFindings.length,
+      countsByType: reviewCountsByType,
+      items: reviewFindings.map((finding) => ({
+        at: finding.recordedAt,
+        type: finding.issueType,
+        sourceRange: finding.sourceRange,
+        targetStartCell: finding.targetStartCell,
+        expectedRows: finding.expectedRowCount,
+        actualRows: finding.actualRowCount,
+        rowDelta: finding.rowDelta
+      }))
+    }
   };
 
   await fs.writeFile(reportPath, `${JSON.stringify(reportPayload, null, 2)}\n`, "utf8");
