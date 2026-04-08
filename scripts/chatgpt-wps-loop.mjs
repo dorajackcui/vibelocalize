@@ -212,7 +212,7 @@ async function launchBrowser(config) {
     page = await context.newPage();
   }
 
-  await page.goto(config.chatgpt.homeUrl, { waitUntil: "domcontentloaded" });
+  await page.goto(getInitialChatgptUrl(config), { waitUntil: "domcontentloaded" });
   return {
     page,
     refreshPage: async () => page,
@@ -275,6 +275,7 @@ async function connectToExistingChrome(config) {
 
       return nextPage;
     },
+    listPages: async () => listChatgptPages(browser, config),
     close: async () => {
       await browser.close();
     }
@@ -283,20 +284,60 @@ async function connectToExistingChrome(config) {
 
 async function pickChatgptPage(browser, config) {
   const contexts = browser.contexts();
-  const allPages = contexts.flatMap((context) => context.pages());
-  const matchingPages = allPages.filter((page) => {
-    const url = page.url();
-    return url.startsWith(config.chatgpt.homeUrl) || url.startsWith("https://chatgpt.com/");
-  });
+  const matchingPages = listChatgptPages(browser, config);
+  const configuredPage = pickConfiguredChatgptPage(matchingPages, config);
 
-  if (matchingPages.length > 0) {
+  if (configuredPage) {
+    return configuredPage;
+  }
+
+  if (!config.chatgpt.projectUrl && matchingPages.length > 0) {
     return matchingPages.at(-1);
   }
 
   for (const context of contexts) {
     const page = await context.newPage();
-    await page.goto(config.chatgpt.homeUrl, { waitUntil: "domcontentloaded" });
+    await page.goto(getInitialChatgptUrl(config), { waitUntil: "domcontentloaded" });
     return page;
+  }
+
+  if (matchingPages.length > 0) {
+    return matchingPages.at(-1);
+  }
+
+  return null;
+}
+
+function listChatgptPages(browser, config) {
+  return browser
+    .contexts()
+    .flatMap((context) => context.pages())
+    .filter((page) => isChatgptUrl(page.url(), config.chatgpt.homeUrl));
+}
+
+function pickConfiguredChatgptPage(pages, config) {
+  const targetUrl = normalizeOptionalComparableUrl(config.chatgpt.targetUrl);
+  const projectUrl = normalizeOptionalComparableUrl(config.chatgpt.projectUrl);
+
+  if (targetUrl) {
+    const exactTargetMatch = pages.filter((page) => normalizeOptionalComparableUrl(page.url()) === targetUrl);
+    if (exactTargetMatch.length > 0) {
+      return exactTargetMatch.at(-1);
+    }
+  }
+
+  if (!projectUrl) {
+    return null;
+  }
+
+  const projectHomeMatches = pages.filter((page) => isProjectHomeUrl(page.url(), config.chatgpt.projectUrl));
+  if (projectHomeMatches.length > 0) {
+    return projectHomeMatches.at(-1);
+  }
+
+  const projectConversationMatches = pages.filter((page) => isConversationUrl(page.url(), config.chatgpt.projectUrl));
+  if (projectConversationMatches.length > 0) {
+    return projectConversationMatches.at(-1);
   }
 
   return null;
@@ -312,16 +353,59 @@ async function bootstrapChatgpt(config, browserSession) {
   }
 
   console.log("Open any chat page inside the target project, or the project page itself.");
-  console.log("If you have multiple ChatGPT tabs, make this one the most recently opened or the only ChatGPT tab.");
+  console.log("If you have other ChatGPT tabs from different projects open, close them first.");
   console.log("When that page is ready, press Enter here.");
   await rl.question("");
 
-  const page = await browserSession.refreshPage();
+  const pageCandidates =
+    typeof browserSession.listPages === "function"
+      ? await browserSession.listPages()
+      : [await browserSession.refreshPage()];
+  const page = pickBootstrapChatgptPage(pageCandidates);
   config.chatgpt.targetUrl = page.url();
   config.chatgpt.projectUrl = deriveProjectUrl(page.url());
   await saveConfig(config);
   console.log(`Captured project URL: ${config.chatgpt.projectUrl}`);
   return page;
+}
+
+function pickBootstrapChatgptPage(pages) {
+  if (pages.length === 0) {
+    throw new Error("Could not find an open ChatGPT tab for bootstrap.");
+  }
+
+  const projectCandidates = pages
+    .map((page) => ({
+      page,
+      projectUrl: deriveProjectUrlSafe(page.url())
+    }))
+    .filter((candidate) => candidate.projectUrl);
+  const uniqueProjectUrls = [...new Set(projectCandidates.map((candidate) => candidate.projectUrl))];
+
+  if (uniqueProjectUrls.length === 1) {
+    const matchingProjectPages = projectCandidates.filter(
+      (candidate) => candidate.projectUrl === uniqueProjectUrls[0]
+    );
+    return matchingProjectPages.at(-1)?.page ?? pages.at(-1);
+  }
+
+  if (uniqueProjectUrls.length > 1) {
+    throw new Error(
+      [
+        "Bootstrap found multiple ChatGPT projects open at the same time.",
+        "Close the other ChatGPT project tabs, keep only the target project tab open, then run bootstrap again.",
+        `Detected projects: ${uniqueProjectUrls.join(", ")}`
+      ].join(" ")
+    );
+  }
+
+  if (pages.length === 1) {
+    return pages[0];
+  }
+
+  throw new Error(
+    "Bootstrap could not determine which ChatGPT tab belongs to the target project. Open the target project page in a single ChatGPT tab and retry."
+  );
 }
 
 function getChromeDebugUrl(config) {
@@ -853,6 +937,26 @@ function normalizeComparableUrl(rawUrl) {
   return `${url.origin}${url.pathname.replace(/\/+$/, "") || "/"}`;
 }
 
+function normalizeOptionalComparableUrl(rawUrl) {
+  if (!rawUrl) {
+    return "";
+  }
+
+  try {
+    return normalizeComparableUrl(rawUrl);
+  } catch {
+    return "";
+  }
+}
+
+function getInitialChatgptUrl(config) {
+  return config.chatgpt.targetUrl || config.chatgpt.projectUrl || config.chatgpt.homeUrl;
+}
+
+function isChatgptUrl(rawUrl, homeUrl) {
+  return rawUrl.startsWith(homeUrl) || rawUrl.startsWith("https://chatgpt.com/");
+}
+
 function isProjectHomeUrl(rawUrl, projectUrl) {
   return normalizeComparableUrl(rawUrl) === normalizeComparableUrl(projectUrl);
 }
@@ -1020,6 +1124,14 @@ function deriveProjectUrl(rawUrl) {
   }
 
   throw new Error(`Could not derive project URL from ${rawUrl}`);
+}
+
+function deriveProjectUrlSafe(rawUrl) {
+  try {
+    return deriveProjectUrl(rawUrl);
+  } catch {
+    return "";
+  }
 }
 
 function buildBatchRowCountFinding({ config, startRow, sourceValues, rawResponseText, outputMatrix }) {
