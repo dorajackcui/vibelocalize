@@ -161,7 +161,7 @@ async function runLoop({
       await waitForComposer(page);
       const responseText = isProjectHomeUrl(page.url(), config.chatgpt.projectUrl)
         ? await sendPromptWithFreshChatRecovery(page, prompt, config)
-        : await sendPromptInCurrentChatAndWaitForResponse(page, prompt, config);
+        : await sendPromptInCurrentChatAndWaitForResponse(page, prompt, config.workflow);
       const outputMatrix = parseAssistantResponseToMatrix(responseText, config.response);
       const reviewFinding = buildBatchRowCountFinding({
         config,

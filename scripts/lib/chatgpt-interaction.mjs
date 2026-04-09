@@ -13,19 +13,6 @@ const COMPOSER_SELECTORS = [
   "textarea[placeholder]",
   "div[contenteditable='true']"
 ];
-const MAX_PAGE_RECOVERY_ATTEMPTS = 3;
-const CHATGPT_PAGE_ERROR_CODES = {
-  assistantResponseTimeout: "ASSISTANT_RESPONSE_TIMEOUT",
-  composerMissing: "COMPOSER_MISSING",
-  freshChatCreateFailed: "FRESH_CHAT_CREATION_FAILED",
-  projectOpenTimeout: "PROJECT_OPEN_TIMEOUT"
-};
-const CHATGPT_PAGE_ERROR_LABELS = {
-  [CHATGPT_PAGE_ERROR_CODES.assistantResponseTimeout]: "assistant-response-timeout",
-  [CHATGPT_PAGE_ERROR_CODES.composerMissing]: "composer-missing",
-  [CHATGPT_PAGE_ERROR_CODES.freshChatCreateFailed]: "fresh-chat-create-failed",
-  [CHATGPT_PAGE_ERROR_CODES.projectOpenTimeout]: "project-open-timeout"
-};
 
 export async function waitForComposer(page) {
   const composer = await findVisibleComposer(page, 30000);
@@ -33,11 +20,7 @@ export async function waitForComposer(page) {
     return composer;
   }
 
-  throw await createChatgptPageError(
-    page,
-    CHATGPT_PAGE_ERROR_CODES.composerMissing,
-    "Could not find the ChatGPT composer."
-  );
+  throw new Error("Could not find the ChatGPT composer.");
 }
 
 export async function findVisibleComposer(page, timeoutMs = 0) {
@@ -87,19 +70,24 @@ export async function sendPromptAndWaitForResponse(page, prompt) {
   };
 }
 
-export async function sendPromptInCurrentChatAndWaitForResponse(page, prompt, config) {
-  return sendPromptWithPageRecovery(page, prompt, config, "current");
+export async function sendPromptInCurrentChatAndWaitForResponse(page, prompt, workflow) {
+  const { initialAssistantCount } = await sendPromptAndWaitForResponse(page, prompt);
+
+  await page.waitForFunction(
+    (count) => document.querySelectorAll("[data-message-author-role='assistant']").length > count,
+    initialAssistantCount,
+    { timeout: workflow.responseTimeoutMs }
+  );
+
+  return waitForStableAssistantMessage(page, workflow);
 }
 
-export async function openFreshProjectChat(page, config, options = {}) {
+export async function openFreshProjectChat(page, config) {
   if (!config.chatgpt.projectUrl) {
     throw new Error("Missing chatgpt.projectUrl. Run bootstrap again.");
   }
 
-  if (!options.skipProjectNavigation) {
-    await gotoProjectPage(page, config.chatgpt.projectUrl);
-  }
-
+  await page.goto(config.chatgpt.projectUrl, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(1000);
 
   if (await hasVisibleComposer(page, 8000)) {
@@ -170,15 +158,44 @@ export async function openFreshProjectChat(page, config, options = {}) {
     }
   }
 
-  throw await createChatgptPageError(
-    page,
-    CHATGPT_PAGE_ERROR_CODES.freshChatCreateFailed,
-    "Could not open a fresh chat from the project page."
+  const debugPath = path.join(DEBUG_DIR, `project-open-failed-${Date.now()}.png`);
+  await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
+  throw new Error(
+    `Could not open a fresh chat from the project page. Screenshot saved to ${debugPath}.`
   );
 }
 
 export async function sendPromptWithFreshChatRecovery(page, prompt, config) {
-  return sendPromptWithPageRecovery(page, prompt, config, "fresh");
+  const maxAttempts = 3;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const promptState = await sendPromptAndWaitForResponse(page, prompt);
+
+      await waitForFreshConversationCreation(page, config, promptState);
+
+      await page.waitForFunction(
+        (count) => document.querySelectorAll("[data-message-author-role='assistant']").length > count,
+        promptState.initialAssistantCount,
+        { timeout: config.workflow.responseTimeoutMs }
+      );
+
+      return await waitForStableAssistantMessage(page, config.workflow);
+    } catch (error) {
+      lastError = error;
+      if (error.code !== "FRESH_CHAT_CREATION_FAILED" || attempt >= maxAttempts) {
+        throw error;
+      }
+
+      console.log(
+        `Fresh project chat was not created successfully. Returning to the project page and retrying (${attempt + 1}/${maxAttempts}).`
+      );
+      await resetToProjectPage(page, config);
+    }
+  }
+
+  throw lastError;
 }
 
 export async function waitForFreshConversationCreation(page, config, promptState) {
@@ -208,19 +225,20 @@ export async function waitForFreshConversationCreation(page, config, promptState
     await page.waitForTimeout(500);
   }
 
-  const error = await createChatgptPageError(
-    page,
-    CHATGPT_PAGE_ERROR_CODES.freshChatCreateFailed,
-    "Timed out while waiting for a fresh project chat to be created."
+  const debugPath = path.join(DEBUG_DIR, `fresh-chat-create-failed-${Date.now()}.png`);
+  await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
+  const error = new Error(
+    `Timed out while waiting for a fresh project chat to be created. Screenshot saved to ${debugPath}`
   );
+  error.code = "FRESH_CHAT_CREATION_FAILED";
   throw error;
 }
 
 export async function resetToProjectPage(page, config) {
-  await gotoProjectPage(page, config.chatgpt.projectUrl);
-  await reloadProjectPage(page, config.chatgpt.projectUrl);
+  await page.goto(config.chatgpt.projectUrl, { waitUntil: "domcontentloaded" });
+  await page.reload({ waitUntil: "domcontentloaded" }).catch(() => null);
   await page.waitForTimeout(1500);
-  await openFreshProjectChat(page, config, { skipProjectNavigation: true });
+  await openFreshProjectChat(page, config);
   await waitForComposer(page);
 }
 
@@ -249,128 +267,6 @@ export async function waitForStableAssistantMessage(page, workflow) {
   const debugPath = path.join(DEBUG_DIR, `timeout-${Date.now()}.png`);
   await page.screenshot({ path: debugPath, fullPage: true });
   throw new Error(`Timed out while waiting for ChatGPT. Screenshot saved to ${debugPath}`);
-}
-
-async function sendPromptWithPageRecovery(page, prompt, config, mode) {
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= MAX_PAGE_RECOVERY_ATTEMPTS; attempt += 1) {
-    try {
-      if (attempt > 1) {
-        await resetToProjectPage(page, config);
-        mode = "fresh";
-      }
-
-      if (mode === "fresh") {
-        return await sendPromptToFreshProjectChat(page, prompt, config);
-      }
-
-      return await sendPromptToCurrentChat(page, prompt, config.workflow);
-    } catch (error) {
-      lastError = error;
-      if (!isRecoverableChatgptPageError(error) || attempt >= MAX_PAGE_RECOVERY_ATTEMPTS) {
-        throw error;
-      }
-
-      console.log(
-        [
-          `[Recovery ${attempt}/${MAX_PAGE_RECOVERY_ATTEMPTS}]`,
-          `${getRecoverableChatgptPageErrorLabel(error)}.`,
-          "Returning to the project page, refreshing, opening a fresh chat, and retrying."
-        ].join(" ")
-      );
-      mode = "fresh";
-    }
-  }
-
-  throw lastError;
-}
-
-async function sendPromptToCurrentChat(page, prompt, workflow) {
-  const { initialAssistantCount } = await sendPromptAndWaitForResponse(page, prompt);
-  await waitForAssistantMessage(page, initialAssistantCount, workflow.responseTimeoutMs);
-  return waitForStableAssistantMessage(page, workflow);
-}
-
-async function sendPromptToFreshProjectChat(page, prompt, config) {
-  const promptState = await sendPromptAndWaitForResponse(page, prompt);
-  await waitForFreshConversationCreation(page, config, promptState);
-  await waitForAssistantMessage(page, promptState.initialAssistantCount, config.workflow.responseTimeoutMs);
-  return waitForStableAssistantMessage(page, config.workflow);
-}
-
-async function waitForAssistantMessage(page, initialAssistantCount, timeoutMs) {
-  try {
-    await page.waitForFunction(
-      (count) => document.querySelectorAll("[data-message-author-role='assistant']").length > count,
-      initialAssistantCount,
-      { timeout: timeoutMs }
-    );
-  } catch (error) {
-    if (isTimeoutError(error)) {
-      throw await createChatgptPageError(
-        page,
-        CHATGPT_PAGE_ERROR_CODES.assistantResponseTimeout,
-        "Timed out while waiting for a new ChatGPT assistant message."
-      );
-    }
-
-    throw error;
-  }
-}
-
-async function gotoProjectPage(page, projectUrl) {
-  try {
-    await page.goto(projectUrl, { waitUntil: "domcontentloaded" });
-  } catch (error) {
-    if (isTimeoutError(error)) {
-      throw await createChatgptPageError(
-        page,
-        CHATGPT_PAGE_ERROR_CODES.projectOpenTimeout,
-        `Timed out while opening the project page (${projectUrl}).`
-      );
-    }
-
-    throw error;
-  }
-}
-
-async function reloadProjectPage(page, projectUrl) {
-  try {
-    await page.reload({ waitUntil: "domcontentloaded" });
-  } catch (error) {
-    if (isTimeoutError(error)) {
-      throw await createChatgptPageError(
-        page,
-        CHATGPT_PAGE_ERROR_CODES.projectOpenTimeout,
-        `Timed out while reloading the project page (${projectUrl}).`
-      );
-    }
-
-    throw error;
-  }
-}
-
-async function createChatgptPageError(page, code, message) {
-  const label = CHATGPT_PAGE_ERROR_LABELS[code] || "chatgpt-page-error";
-  const debugPath = path.join(DEBUG_DIR, `${label}-${Date.now()}.png`);
-  await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
-
-  const error = new Error(`${message} Screenshot saved to ${debugPath}`);
-  error.code = code;
-  return error;
-}
-
-function isRecoverableChatgptPageError(error) {
-  return Object.values(CHATGPT_PAGE_ERROR_CODES).includes(error?.code);
-}
-
-function getRecoverableChatgptPageErrorLabel(error) {
-  return CHATGPT_PAGE_ERROR_LABELS[error?.code] || "chatgpt-page-error";
-}
-
-function isTimeoutError(error) {
-  return Boolean(error?.name === "TimeoutError" || /Timeout \d+ms exceeded/i.test(error?.message || ""));
 }
 
 export async function getLatestAssistantText(page) {
