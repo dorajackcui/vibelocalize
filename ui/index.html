@@ -354,6 +354,27 @@
         warningEl.textContent = text || "";
       }
 
+      function describeWriteCheck(writeCheck) {
+        if (!writeCheck || writeCheck.ok) {
+          return "";
+        }
+
+        switch (writeCheck.code) {
+          case "READ_ONLY_ATTRIBUTE":
+            return "当前目标 Excel 文件被标记为 read-only，请先关闭只读属性再运行。";
+          case "LOCKED_FOR_UPDATE":
+            return "当前目标 Excel 似乎正被 Excel/WPS 以只读或占用状态打开，请先关闭该文件的 read-only/只读占用后再运行。";
+          case "NO_WRITE_ACCESS":
+            return "当前目标 Excel 没有写权限，请先检查文件权限后再运行。";
+          case "NO_DIRECTORY_WRITE_ACCESS":
+            return "当前 Excel 所在目录不可写，程序无法生成临时文件后再覆盖原文件。";
+          default:
+            return writeCheck.detail
+              ? `目标 Excel 写入预检查失败：${writeCheck.detail}`
+              : "目标 Excel 写入预检查失败，请确认文件不是只读或被占用。";
+        }
+      }
+
       async function copyText(text) {
         if (navigator.clipboard?.writeText) {
           await navigator.clipboard.writeText(text);
@@ -436,7 +457,7 @@
         };
       }
 
-      function renderDerived(derived, status, config) {
+      function renderDerived(derived, status, config, writeCheck) {
         document.getElementById("total-conversations").textContent = derived.totalConversations;
         document.getElementById("total-runs").textContent = derived.totalRuns;
         document.getElementById("total-rows").textContent = derived.totalRows;
@@ -463,6 +484,10 @@
         if (status.missingWorkbook) {
           warnings.push("还没选择工作簿文件。");
         }
+        const writeWarning = describeWriteCheck(writeCheck);
+        if (writeWarning) {
+          warnings.push(writeWarning);
+        }
         setWarning(warnings.join(" "));
       }
 
@@ -470,7 +495,7 @@
         const data = await fetchJson("/api/config");
         fillWorkflow(data.config);
         fillWorkbook(data.config, data.workbookInfo);
-        renderDerived(data.derived, data.status || {}, data.config);
+        renderDerived(data.derived, data.status || {}, data.config, data.writeCheck);
         setMessage(data.status && data.status.running ? "任务运行中" : "配置已加载");
       }
 
@@ -479,7 +504,7 @@
           const data = await fetchJson("/api/choose-file", { method: "POST" });
           fillWorkflow(data.config);
           fillWorkbook(data.config, data.workbookInfo);
-          renderDerived(data.derived, data.status || {}, data.config);
+          renderDerived(data.derived, data.status || {}, data.config, data.writeCheck);
           setMessage("文件已选择");
         } catch (error) {
           setWarning(error.message);
@@ -493,7 +518,7 @@
             body: JSON.stringify(readForm())
           });
           fillWorkbook(data.config, data.workbookInfo);
-          renderDerived(data.derived, data.status || {}, data.config);
+          renderDerived(data.derived, data.status || {}, data.config, data.writeCheck);
           setMessage("配置已保存");
         } catch (error) {
           setWarning(error.message);
@@ -508,7 +533,7 @@
           });
           fillWorkflow(data.config);
           fillWorkbook(data.config, data.workbookInfo);
-          renderDerived(data.derived, data.status || {}, data.config);
+          renderDerived(data.derived, data.status || {}, data.config, data.writeCheck);
           setMessage("参数已确认并已应用");
         } catch (error) {
           setWarning(error.message);
@@ -523,7 +548,7 @@
           });
           fillWorkflow(saved.config);
           fillWorkbook(saved.config, saved.workbookInfo);
-          renderDerived(saved.derived, saved.status || {}, saved.config);
+          renderDerived(saved.derived, saved.status || {}, saved.config, saved.writeCheck);
           await fetchJson("/api/run", { method: "POST" });
           setMessage("任务已启动");
           await refreshStatusOnly();
@@ -558,7 +583,7 @@
       async function refreshStatusOnly() {
         const data = await fetchJson("/api/status");
         const configData = await fetchJson("/api/config");
-        renderDerived(data.derived, data.status || {}, configData.config);
+        renderDerived(data.derived, data.status || {}, configData.config, configData.writeCheck || data.writeCheck);
       }
 
       refresh().catch((error) => setWarning(error.message));

@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import sys
 import time
 from tempfile import NamedTemporaryFile
@@ -11,7 +13,7 @@ def main() -> None:
     configure_stdio()
 
     if len(sys.argv) != 2:
-        raise SystemExit("Usage: workbook_helper.py <info|read-batch|write-batch>")
+        raise SystemExit("Usage: workbook_helper.py <info|read-batch|write-batch|write-check>")
 
     command = sys.argv[1]
     payload = read_json_from_stdin()
@@ -28,10 +30,15 @@ def main() -> None:
         print_json(write_batch(payload))
         return
 
+    if command == "write-check":
+        print_json(check_write_ready(payload))
+        return
+
     raise SystemExit(f"Unknown command: {command}")
 
 
 def get_workbook_info(payload: dict) -> dict:
+    ensure_supported_workbook_path(Path(payload["filePath"]))
     workbook = open_workbook(payload["filePath"])
     try:
         return {
@@ -43,6 +50,7 @@ def get_workbook_info(payload: dict) -> dict:
 
 
 def read_batch(payload: dict) -> dict:
+    ensure_supported_workbook_path(Path(payload["filePath"]))
     workbook = open_workbook(payload["filePath"])
     try:
         sheet = pick_sheet(workbook, payload.get("sheetName"))
@@ -61,6 +69,7 @@ def read_batch(payload: dict) -> dict:
 
 
 def write_batch(payload: dict) -> dict:
+    ensure_supported_workbook_path(Path(payload["filePath"]))
     workbook = open_workbook(payload["filePath"])
     temp_path: Path | None = None
     workbook_closed = False
@@ -96,10 +105,54 @@ def write_batch(payload: dict) -> dict:
             temp_path.unlink(missing_ok=True)
 
 
+def check_write_ready(payload: dict) -> dict:
+    path = Path(payload["filePath"])
+    ensure_supported_workbook_path(path)
+
+    if has_read_only_attribute(path):
+        return {"ok": False, "code": "READ_ONLY_ATTRIBUTE"}
+
+    if not os.access(path, os.W_OK):
+        return {"ok": False, "code": "NO_WRITE_ACCESS"}
+
+    try:
+        with path.open("r+b"):
+            pass
+    except PermissionError:
+        return {"ok": False, "code": "LOCKED_FOR_UPDATE"}
+    except OSError as error:
+        return {"ok": False, "code": "WRITE_CHECK_FAILED", "detail": str(error)}
+
+    try:
+        with NamedTemporaryFile(delete=True, suffix=path.suffix, dir=path.parent):
+            pass
+    except PermissionError:
+        return {"ok": False, "code": "NO_DIRECTORY_WRITE_ACCESS"}
+    except OSError as error:
+        return {"ok": False, "code": "WRITE_CHECK_FAILED", "detail": str(error)}
+
+    return {"ok": True, "code": "OK"}
+
+
 def open_workbook(file_path: str):
     path = Path(file_path)
     keep_vba = path.suffix.lower() == ".xlsm"
     return load_workbook(filename=file_path, keep_vba=keep_vba)
+
+
+def ensure_supported_workbook_path(path: Path) -> None:
+    if not path.exists():
+        raise FileNotFoundError(f"Workbook file does not exist: {path}")
+    if not path.is_file():
+        raise ValueError(f"Workbook path is not a file: {path}")
+    if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        raise ValueError("Please choose an .xlsx or .xlsm workbook.")
+
+
+def has_read_only_attribute(path: Path) -> bool:
+    file_attributes = getattr(path.stat(), "st_file_attributes", 0)
+    read_only_flag = getattr(stat, "FILE_ATTRIBUTE_READONLY", 0)
+    return bool(read_only_flag and file_attributes & read_only_flag)
 
 
 def pick_sheet(workbook, sheet_name: str):
@@ -124,7 +177,7 @@ def replace_with_retry(temp_path: Path, target_path: Path) -> None:
 
     raise PermissionError(
         "Could not replace the workbook file after multiple retries. "
-        f"Make sure '{target_path}' is not open in Excel/WPS and is not being watched by memoQ, sync software, antivirus, or Explorer preview."
+        f"Make sure '{target_path}' is not open in Excel/WPS, is not in read-only mode, and is not being watched by memoQ, sync software, antivirus, or Explorer preview."
     ) from last_error
 
 

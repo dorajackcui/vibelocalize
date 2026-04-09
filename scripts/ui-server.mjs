@@ -3,47 +3,24 @@ import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
-import { chooseWorkbookFile as chooseWorkbookFileWithDialog, getPythonCommand } from "./runtime-platform.mjs";
+import { chooseWorkbookFile as chooseWorkbookFileWithDialog } from "./runtime-platform.mjs";
+import {
+  buildDerivedInfo,
+  isBootstrapMissing,
+  loadOrCreateConfig,
+  mergeConfig,
+  normalizeConfig,
+  saveConfig
+} from "./lib/automation-config.mjs";
+import {
+  formatWorkbookWriteIssue,
+  getWorkbookInfo,
+  getWorkbookWriteCheck
+} from "./lib/workbook-service.mjs";
 
 const ROOT = process.cwd();
-const CONFIG_PATH = path.join(ROOT, "automation.config.json");
 const UI_PATH = path.join(ROOT, "ui", "index.html");
-const WORKBOOK_HELPER = path.join(ROOT, "scripts", "workbook_helper.py");
 const PORT = 4312;
-
-const DEFAULT_CONFIG = {
-  browser: {
-    mode: "attach",
-    channel: "chrome",
-    userDataDir: "./.chrome-profile",
-    headless: false,
-    debugPort: 9222
-  },
-  chatgpt: {
-    homeUrl: "https://chatgpt.com/",
-    targetUrl: "",
-    projectUrl: ""
-  },
-  workbook: {
-    filePath: "",
-    sheetName: ""
-  },
-  workflow: {
-    sourceColumn: "A",
-    targetColumn: "B",
-    startRow: 1,
-    batchSize: 50,
-    resetConversationEveryRuns: 8,
-    newConversationLimit: 5,
-    pollIntervalMs: 2000,
-    responseTimeoutMs: 240000,
-    maxLoops: 0,
-    stopWhenEntireBatchEmpty: true
-  },
-  response: {
-    stripCodeFences: true
-  }
-};
 
 const status = {
   running: false,
@@ -136,6 +113,13 @@ function startServer() {
           });
         }
 
+        const writeCheck = await getWorkbookWriteCheck(config.workbook.filePath);
+        if (!writeCheck.ok) {
+          return respondJson(res, 400, {
+            error: formatWorkbookWriteIssue(writeCheck, config.workbook.filePath)
+          });
+        }
+
         startRunner();
         return respondJson(res, 200, { ok: true });
       }
@@ -154,7 +138,8 @@ function startServer() {
         return respondJson(res, 200, {
           status: payload.status,
           derived: payload.derived,
-          workbookInfo: payload.workbookInfo
+          workbookInfo: payload.workbookInfo,
+          writeCheck: payload.writeCheck
         });
       }
 
@@ -172,6 +157,7 @@ function startServer() {
 async function buildConfigPayload(configOverride) {
   const config = configOverride ?? (await loadOrCreateConfig());
   const workbookInfo = config.workbook.filePath ? await getWorkbookInfo(config.workbook.filePath) : null;
+  const writeCheck = config.workbook.filePath ? await getWorkbookWriteCheck(config.workbook.filePath) : null;
 
   status.missingBootstrap = isBootstrapMissing(config);
   status.missingWorkbook = !config.workbook.filePath;
@@ -180,7 +166,8 @@ async function buildConfigPayload(configOverride) {
     config,
     status,
     derived: buildDerivedInfo(config),
-    workbookInfo
+    workbookInfo,
+    writeCheck
   };
 }
 
@@ -222,94 +209,6 @@ function startRunner() {
   });
 }
 
-async function loadOrCreateConfig() {
-  try {
-    const raw = await fs.readFile(CONFIG_PATH, "utf8");
-    return normalizeConfig(mergeConfig(DEFAULT_CONFIG, JSON.parse(raw)));
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
-
-    await saveConfig(DEFAULT_CONFIG);
-    return structuredClone(DEFAULT_CONFIG);
-  }
-}
-
-async function saveConfig(config) {
-  await fs.writeFile(CONFIG_PATH, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`, "utf8");
-}
-
-function mergeConfig(base, override) {
-  const output = Array.isArray(base) ? [...base] : { ...base };
-
-  for (const [key, value] of Object.entries(override ?? {})) {
-    if (
-      value &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      base[key] &&
-      typeof base[key] === "object" &&
-      !Array.isArray(base[key])
-    ) {
-      output[key] = mergeConfig(base[key], value);
-      continue;
-    }
-
-    output[key] = value;
-  }
-
-  return output;
-}
-
-function normalizeConfig(config) {
-  const normalized = mergeConfig(DEFAULT_CONFIG, config ?? {});
-  const browser = normalized.browser;
-  const workbook = normalized.workbook;
-  const workflow = normalized.workflow;
-
-  browser.mode = browser.mode === "launch" ? "launch" : "attach";
-  browser.debugPort = Math.max(1, readNumber(browser.debugPort, DEFAULT_CONFIG.browser.debugPort));
-  workbook.filePath = String(workbook.filePath || "").trim();
-  workbook.sheetName = String(workbook.sheetName || "").trim();
-  workflow.batchSize = Math.max(1, readNumber(workflow.batchSize, DEFAULT_CONFIG.workflow.batchSize));
-  workflow.startRow = Math.max(1, readNumber(workflow.startRow, DEFAULT_CONFIG.workflow.startRow));
-  workflow.resetConversationEveryRuns = Math.max(
-    1,
-    readNumber(workflow.resetConversationEveryRuns, DEFAULT_CONFIG.workflow.resetConversationEveryRuns)
-  );
-  workflow.newConversationLimit = Math.max(
-    0,
-    readNumber(workflow.newConversationLimit, DEFAULT_CONFIG.workflow.newConversationLimit)
-  );
-  workflow.sourceColumn = String(workflow.sourceColumn || DEFAULT_CONFIG.workflow.sourceColumn).trim().toUpperCase();
-  workflow.targetColumn = String(workflow.targetColumn || DEFAULT_CONFIG.workflow.targetColumn).trim().toUpperCase();
-
-  return normalized;
-}
-
-function readNumber(value, fallback) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
-}
-
-function buildDerivedInfo(config) {
-  const runsPerConversation = config.workflow.resetConversationEveryRuns;
-  const totalConversations = config.workflow.newConversationLimit + 1;
-  const totalRuns = totalConversations * runsPerConversation;
-  const totalRows = totalRuns * config.workflow.batchSize;
-
-  return {
-    totalConversations,
-    totalRuns,
-    totalRows
-  };
-}
-
-function isBootstrapMissing(config) {
-  return !config.chatgpt.projectUrl;
-}
-
 function appendLog(text) {
   const lines = text
     .replace(/\r\n/g, "\n")
@@ -326,46 +225,6 @@ function appendLog(text) {
 
 async function chooseWorkbookFile() {
   return chooseWorkbookFileWithDialog({ cwd: ROOT });
-}
-
-async function getWorkbookInfo(filePath) {
-  const pythonCommand = await getPythonCommand();
-  const stdout = await runCommandWithInput(
-    pythonCommand.command,
-    [...pythonCommand.args, WORKBOOK_HELPER, "info"],
-    JSON.stringify({ filePath }),
-    pythonCommand.displayName
-  );
-  return JSON.parse(stdout);
-}
-
-function runCommandWithInput(command, args, inputText, commandDisplay = command) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve(stdout);
-        return;
-      }
-
-      reject(new Error(`${commandDisplay} exited with code ${code}: ${stderr.trim()}`));
-    });
-
-    child.stdin.write(inputText);
-    child.stdin.end();
-  });
 }
 
 function readJsonBody(req) {
