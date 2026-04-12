@@ -65,6 +65,7 @@
 
 - `chatgpt.projectUrl` 是 bootstrap 是否完成的关键标志；缺失时正式任务不应启动。
 - `startRow` 只决定本次从哪里开始，不代表系统记住了历史进度。
+- UI 现在会在选中文件和切换 sheet 后自动识别第 1 行里的 `source` / `target` 表头，并把 `startRow` 预填为第一条 `source` 有值且 `target` 为空的行；手动输入仍保留在折叠区里。
 - loop 每批会校验输入行数和输出行数是否一致；不一致时仍会继续写回，并在结束后输出 review report。
 - review report 会写到 `debug/review-report-*.json`，适合排查异常批次。
 - 这个项目强依赖 ChatGPT 页面结构和交互细节；涉及页面选择器的修改时，要先确认当前实现依赖的 DOM/文案假设。

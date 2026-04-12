@@ -39,6 +39,24 @@ export async function openUrlInBrowser(targetUrl) {
   return false;
 }
 
+export async function openFileInDefaultApp(targetPath) {
+  if (process.platform === "darwin") {
+    await execFileAsync("open", [targetPath]);
+    return true;
+  }
+
+  if (process.platform === "win32") {
+    await execFileAsync(
+      WINDOWS_POWERSHELL,
+      ["-NoProfile", "-Command", `Start-Process ${toPowerShellString(targetPath)}`],
+      { windowsHide: true }
+    );
+    return true;
+  }
+
+  return false;
+}
+
 export async function chooseWorkbookFile({ cwd } = {}) {
   if (process.platform === "darwin") {
     try {

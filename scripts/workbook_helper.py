@@ -7,19 +7,24 @@ from tempfile import NamedTemporaryFile
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 
 def main() -> None:
     configure_stdio()
 
     if len(sys.argv) != 2:
-        raise SystemExit("Usage: workbook_helper.py <info|read-batch|write-batch|write-check>")
+        raise SystemExit("Usage: workbook_helper.py <info|inspect|read-batch|write-batch|write-check>")
 
     command = sys.argv[1]
     payload = read_json_from_stdin()
 
     if command == "info":
         print_json(get_workbook_info(payload))
+        return
+
+    if command == "inspect":
+        print_json(inspect_workbook(payload))
         return
 
     if command == "read-batch":
@@ -44,6 +49,20 @@ def get_workbook_info(payload: dict) -> dict:
         return {
             "sheetNames": workbook.sheetnames,
             "activeSheetName": workbook.active.title,
+        }
+    finally:
+        workbook.close()
+
+
+def inspect_workbook(payload: dict) -> dict:
+    ensure_supported_workbook_path(Path(payload["filePath"]))
+    workbook = open_workbook(payload["filePath"])
+    try:
+        sheet = pick_sheet(workbook, payload.get("sheetName"))
+        return {
+            "sheetNames": workbook.sheetnames,
+            "activeSheetName": workbook.active.title,
+            "sheetAnalysis": analyze_sheet(sheet),
         }
     finally:
         workbook.close()
@@ -161,6 +180,112 @@ def pick_sheet(workbook, sheet_name: str):
     return workbook.active
 
 
+def analyze_sheet(sheet) -> dict:
+    source_matches = find_header_columns(sheet, "source")
+    target_matches = find_header_columns(sheet, "target")
+
+    header_issue = describe_header_issue(source_matches, target_matches)
+    if header_issue:
+        return manual_review_result(
+            header_issue,
+            build_row_counts(sheet, source_matches[0] if len(source_matches) == 1 else None, None),
+        )
+
+    source_column = get_column_letter(source_matches[0])
+    target_column = get_column_letter(target_matches[0])
+    row_counts = build_row_counts(sheet, source_matches[0], target_matches[0])
+    start_row = find_start_row(sheet, source_matches[0], target_matches[0])
+
+    if start_row is None:
+        return manual_review_result(
+            "未找到待处理行：从第 2 行开始，没有找到 source 有内容且 target 为空的行。",
+            row_counts,
+        )
+
+    return {
+        "status": "auto_detected",
+        "message": f"已自动识别 source={source_column}，target={target_column}，开始行={start_row}。",
+        "sourceColumn": source_column,
+        "targetColumn": target_column,
+        "startRow": start_row,
+        **row_counts,
+    }
+
+
+def find_header_columns(sheet, header_name: str) -> list[int]:
+    matches: list[int] = []
+
+    for column_index in range(1, sheet.max_column + 1):
+        cell_value = normalize_text(sheet.cell(row=1, column=column_index).value).lower()
+        if cell_value == header_name:
+            matches.append(column_index)
+
+    return matches
+
+
+def describe_header_issue(source_matches: list[int], target_matches: list[int]) -> str | None:
+    if not source_matches and not target_matches:
+        return "未找到表头：第 1 行里没有名为 source 或 target 的列。"
+    if not source_matches:
+        return "未找到 source 表头：请确认第 1 行存在精确的 source 列名。"
+    if not target_matches:
+        return "未找到 target 表头：请确认第 1 行存在精确的 target 列名。"
+    if len(source_matches) > 1:
+        return "检测到多个 source 表头：请保留唯一的 source 列，或手动指定列。"
+    if len(target_matches) > 1:
+        return "检测到多个 target 表头：请保留唯一的 target 列，或手动指定列。"
+    return None
+
+
+def find_start_row(sheet, source_column_index: int, target_column_index: int) -> int | None:
+    for row_index in range(2, sheet.max_row + 1):
+        source_value = normalize_text(sheet.cell(row=row_index, column=source_column_index).value)
+        target_value = normalize_text(sheet.cell(row=row_index, column=target_column_index).value)
+
+        if source_value and not target_value:
+            return row_index
+
+    return None
+
+
+def build_row_counts(sheet, source_column_index: int | None, target_column_index: int | None) -> dict:
+    sourceRowCount = 0
+    untranslatedRowCount = None if target_column_index is None else 0
+
+    if source_column_index is None:
+        return {
+            "sourceRowCount": None,
+            "untranslatedRowCount": untranslatedRowCount,
+        }
+
+    for row_index in range(2, sheet.max_row + 1):
+        source_value = normalize_text(sheet.cell(row=row_index, column=source_column_index).value)
+        if not source_value:
+            continue
+
+        sourceRowCount += 1
+        if target_column_index is not None:
+            target_value = normalize_text(sheet.cell(row=row_index, column=target_column_index).value)
+            if not target_value:
+                untranslatedRowCount += 1
+
+    return {
+        "sourceRowCount": sourceRowCount,
+        "untranslatedRowCount": untranslatedRowCount,
+    }
+
+
+def manual_review_result(message: str, row_counts: dict | None = None) -> dict:
+    return {
+        "status": "needs_manual_review",
+        "message": message,
+        "sourceColumn": None,
+        "targetColumn": None,
+        "startRow": None,
+        **(row_counts or {"sourceRowCount": None, "untranslatedRowCount": None}),
+    }
+
+
 def replace_with_retry(temp_path: Path, target_path: Path) -> None:
     delays = [0.0, 0.2, 0.5, 1.0, 2.0, 4.0]
     last_error: PermissionError | None = None
@@ -196,6 +321,12 @@ def configure_stdio() -> None:
 
 def read_json_from_stdin() -> dict:
     return json.loads(sys.stdin.read())
+
+
+def normalize_text(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def column_letter_to_index(column: str) -> int:

@@ -3,7 +3,10 @@ import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
-import { chooseWorkbookFile as chooseWorkbookFileWithDialog } from "./runtime-platform.mjs";
+import {
+  chooseWorkbookFile as chooseWorkbookFileWithDialog,
+  openFileInDefaultApp
+} from "./runtime-platform.mjs";
 import {
   buildDerivedInfo,
   isBootstrapMissing,
@@ -14,7 +17,7 @@ import {
 } from "./lib/automation-config.mjs";
 import {
   formatWorkbookWriteIssue,
-  getWorkbookInfo,
+  inspectWorkbook,
   getWorkbookWriteCheck
 } from "./lib/workbook-service.mjs";
 
@@ -79,7 +82,7 @@ function startServer() {
         }
 
         const existing = await loadOrCreateConfig();
-        const workbookInfo = await getWorkbookInfo(filePath);
+        const workbookInfo = await inspectWorkbook(filePath);
         const nextConfig = normalizeConfig(
           mergeConfig(existing, {
             workbook: {
@@ -91,6 +94,34 @@ function startServer() {
 
         await saveConfig(nextConfig);
         return respondJson(res, 200, await buildConfigPayload(nextConfig));
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/workbook/inspect") {
+        const body = await readJsonBody(req);
+        if (!body.filePath) {
+          return respondJson(res, 400, { error: "Workbook file path is required." });
+        }
+
+        return respondJson(res, 200, await inspectWorkbook(body.filePath, body.sheetName || ""));
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/open-workbook") {
+        const body = await readJsonBody(req);
+        const filePath = String(body.filePath || "").trim();
+
+        if (!filePath) {
+          return respondJson(res, 400, { error: "Workbook file path is required." });
+        }
+
+        await fs.access(filePath);
+        const opened = await openFileInDefaultApp(filePath);
+        if (!opened) {
+          return respondJson(res, 400, {
+            error: "Opening workbook files is only implemented for macOS and Windows."
+          });
+        }
+
+        return respondJson(res, 200, { ok: true });
       }
 
       if (req.method === "POST" && url.pathname === "/api/run") {
@@ -139,6 +170,7 @@ function startServer() {
           status: payload.status,
           derived: payload.derived,
           workbookInfo: payload.workbookInfo,
+          sheetAnalysis: payload.sheetAnalysis,
           writeCheck: payload.writeCheck
         });
       }
@@ -156,7 +188,16 @@ function startServer() {
 
 async function buildConfigPayload(configOverride) {
   const config = configOverride ?? (await loadOrCreateConfig());
-  const workbookInfo = config.workbook.filePath ? await getWorkbookInfo(config.workbook.filePath) : null;
+  const workbookInspection = config.workbook.filePath
+    ? await inspectWorkbook(config.workbook.filePath, config.workbook.sheetName)
+    : null;
+  const workbookInfo = workbookInspection
+    ? {
+        sheetNames: workbookInspection.sheetNames,
+        activeSheetName: workbookInspection.activeSheetName
+      }
+    : null;
+  const sheetAnalysis = workbookInspection?.sheetAnalysis ?? null;
   const writeCheck = config.workbook.filePath ? await getWorkbookWriteCheck(config.workbook.filePath) : null;
 
   status.missingBootstrap = isBootstrapMissing(config);
@@ -167,6 +208,7 @@ async function buildConfigPayload(configOverride) {
     status,
     derived: buildDerivedInfo(config),
     workbookInfo,
+    sheetAnalysis,
     writeCheck
   };
 }

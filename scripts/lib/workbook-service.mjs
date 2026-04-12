@@ -10,6 +10,10 @@ export async function getWorkbookInfo(filePath) {
   return runWorkbookHelper("info", { filePath });
 }
 
+export async function inspectWorkbook(filePath, sheetName = "") {
+  return runWorkbookHelper("inspect", { filePath, sheetName });
+}
+
 export async function getWorkbookWriteCheck(filePath) {
   return runWorkbookHelper("write-check", { filePath });
 }
