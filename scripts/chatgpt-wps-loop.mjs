@@ -1,5 +1,6 @@
 import process from "node:process";
 import readline from "node:readline/promises";
+import { pathToFileURL } from "node:url";
 import { stdin as input, stdout as output } from "node:process";
 import { loadOrCreateConfig } from "./lib/automation-config.mjs";
 import {
@@ -8,12 +9,10 @@ import {
 } from "./lib/chatgpt-browser-session.mjs";
 import {
   openFreshProjectChat,
-  sendPromptInCurrentChatAndWaitForResponse,
-  sendPromptWithFreshChatRecovery,
+  sendPromptAndWaitForResponse,
   waitForComposer
 } from "./lib/chatgpt-interaction.mjs";
 import { parseAssistantResponseToMatrix } from "./lib/chatgpt-response-parser.mjs";
-import { isProjectHomeUrl } from "./lib/chatgpt-url.mjs";
 import {
   buildBatchRowCountFinding,
   buildRunSummary,
@@ -26,15 +25,14 @@ import {
   writeWorkbookBatch
 } from "./lib/workbook-service.mjs";
 
-const rl = readline.createInterface({ input, output });
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const config = await loadOrCreateConfig();
-
-  const browserSession = await launchBrowser(config);
+  const rl = readline.createInterface({ input, output });
+  let browserSession = null;
 
   try {
+    browserSession = await launchBrowser(config);
     let { page } = browserSession;
 
     if (!config.chatgpt.projectUrl || args.bootstrap) {
@@ -65,7 +63,7 @@ async function main() {
       maxLoopsOverride: args.maxLoops
     });
   } finally {
-    await browserSession.close();
+    await browserSession?.close();
     await rl.close();
   }
 }
@@ -92,18 +90,34 @@ function parseArgs(argv) {
   return args;
 }
 
-async function runLoop({
+export async function runLoop({
   config,
   page,
   startRow,
   runsInCurrentConversation: initialRunsInCurrentConversation,
   newConversationsOpened: initialNewConversationsOpened,
   maxLoopsOverride
-}) {
+}, dependencies = {}) {
+  const {
+    logger = console.log,
+    openFreshProjectChatFn = openFreshProjectChat,
+    waitForComposerFn = waitForComposer,
+    sendPromptAndWaitForResponseFn = sendPromptAndWaitForResponse,
+    parseAssistantResponseToMatrixFn = parseAssistantResponseToMatrix,
+    buildBatchRowCountFindingFn = buildBatchRowCountFinding,
+    buildRunSummaryFn = buildRunSummary,
+    writeReviewReportFn = writeReviewReport,
+    readWorkbookBatchFn = readWorkbookBatch,
+    writeWorkbookBatchFn = writeWorkbookBatch
+  } = dependencies;
+
   const batchSize = config.workflow.batchSize;
   const limit = maxLoopsOverride ?? config.workflow.maxLoops;
   const runsPerConversation = config.workflow.resetConversationEveryRuns;
   const newConversationLimit = config.workflow.newConversationLimit;
+  const tipsPrompt = getConfiguredTipsPrompt(config);
+  const totalConversations = getTotalConversations(config);
+  const totalRuns = getTotalRuns(config);
   const startedAt = Date.now();
 
   let currentRow = startRow;
@@ -117,53 +131,73 @@ async function runLoop({
   const reviewFindings = [];
 
   try {
+    if (tipsPrompt) {
+      await prepareConversationForWork({
+        page,
+        config,
+        conversationIndex: getCurrentConversationIndex(newConversationsOpened),
+        totalConversations,
+        openFreshChat: true,
+        tipsPrompt,
+        logger,
+        openFreshProjectChatFn,
+        waitForComposerFn,
+        sendPromptAndWaitForResponseFn
+      });
+    }
+
     while (true) {
       if (limit > 0 && loops >= limit) {
         stopReason = "Reached the max loop limit";
-        console.log("Reached the max loop limit and stopped.");
+        logger("Reached the max loop limit and stopped.");
         break;
       }
 
       if (runsPerConversation > 0 && runsInCurrentConversation >= runsPerConversation) {
         if (newConversationsOpened >= newConversationLimit) {
           stopReason = "Reached the new conversation limit";
-          console.log("Reached the new conversation limit and stopped.");
+          logger("Reached the new conversation limit and stopped.");
           break;
         }
 
-        const nextConversationIndex = newConversationsOpened + 2;
-        console.log(
-          `Opening a fresh chat in the same project. Switching to conversation ${nextConversationIndex}/${getTotalConversations(config)}.`
-        );
-        await openFreshProjectChat(page, config);
-        await waitForComposer(page);
+        const nextConversationIndex = getCurrentConversationIndex(newConversationsOpened + 1);
+        await prepareConversationForWork({
+          page,
+          config,
+          conversationIndex: nextConversationIndex,
+          totalConversations,
+          openFreshChat: true,
+          tipsPrompt,
+          logger,
+          openFreshProjectChatFn,
+          waitForComposerFn,
+          sendPromptAndWaitForResponseFn
+        });
         runsInCurrentConversation = 0;
         newConversationsOpened += 1;
       }
 
-      const values = await readWorkbookBatch(config, currentRow, batchSize);
+      const values = await readWorkbookBatchFn(config, currentRow, batchSize);
       if (config.workflow.stopWhenEntireBatchEmpty && values.every((item) => item.trim() === "")) {
         stopReason = "The whole batch is empty";
-        console.log("The whole batch is empty. Stopping here.");
+        logger("The whole batch is empty. Stopping here.");
         break;
       }
 
-      console.log(
+      logger(
         [
-          `Conversation ${getCurrentConversationIndex(newConversationsOpened)}/${getTotalConversations(config)}`,
+          `Conversation ${getCurrentConversationIndex(newConversationsOpened)}/${totalConversations}`,
           `round ${getCurrentConversationRoundIndex(runsInCurrentConversation)}/${config.workflow.resetConversationEveryRuns}`,
-          `overall ${getOverallRunIndex(loops)}/${getTotalRuns(config)}`,
+          `overall ${getOverallRunIndex(loops)}/${totalRuns}`,
           `sending ${config.workflow.sourceColumn}${currentRow}:${config.workflow.sourceColumn}${currentRow + batchSize - 1} to ChatGPT.`
         ].join(" | ")
       );
 
       const prompt = values.join("\n");
-      await waitForComposer(page);
-      const responseText = isProjectHomeUrl(page.url(), config.chatgpt.projectUrl)
-        ? await sendPromptWithFreshChatRecovery(page, prompt, config)
-        : await sendPromptInCurrentChatAndWaitForResponse(page, prompt, config.workflow);
-      const outputMatrix = parseAssistantResponseToMatrix(responseText, config.response);
-      const reviewFinding = buildBatchRowCountFinding({
+      await waitForComposerFn(page);
+      const responseText = await sendPromptAndWaitForResponseFn(page, prompt, config);
+      const outputMatrix = parseAssistantResponseToMatrixFn(responseText, config.response);
+      const reviewFinding = buildBatchRowCountFindingFn({
         config,
         startRow: currentRow,
         sourceValues: values,
@@ -171,7 +205,7 @@ async function runLoop({
       });
       if (reviewFinding) {
         reviewFindings.push(reviewFinding);
-        console.log(
+        logger(
           [
             `Review required for ${reviewFinding.sourceRange}.`,
             `Expected ${reviewFinding.expectedRowCount} rows but got ${reviewFinding.actualRowCount}.`,
@@ -180,8 +214,8 @@ async function runLoop({
         );
       }
 
-      await writeWorkbookBatch(config, currentRow, outputMatrix);
-      console.log(
+      await writeWorkbookBatchFn(config, currentRow, outputMatrix);
+      logger(
         `Wrote a ${outputMatrix.length}x${Math.max(...outputMatrix.map((row) => row.length), 0)} block starting at ${config.workflow.targetColumn}${currentRow}.`
       );
 
@@ -198,33 +232,67 @@ async function runLoop({
     let reviewReportPath = "";
 
     try {
-      reviewReportPath = await writeReviewReport({
+      reviewReportPath = await writeReviewReportFn({
         config,
         startRow,
         lastCompletedRow,
         loops,
-        totalRuns: getTotalRuns(config),
+        totalRuns,
         elapsedMs,
         stopReason,
         reviewFindings
       });
     } catch (reviewError) {
-      console.log(`Could not write review report: ${reviewError.message}`);
+      logger(`Could not write review report: ${reviewError.message}`);
     }
 
-    console.log(buildRunSummary({
+    logger(buildRunSummaryFn({
       startRow,
       lastCompletedRow,
       sourceColumn: config.workflow.sourceColumn,
       targetColumn: config.workflow.targetColumn,
       loops,
-      totalRuns: getTotalRuns(config),
+      totalRuns,
       elapsedMs,
       stopReason,
       reviewFindings,
       reviewReportPath
     }));
   }
+}
+
+async function prepareConversationForWork({
+  page,
+  config,
+  conversationIndex,
+  totalConversations,
+  openFreshChat,
+  tipsPrompt,
+  logger,
+  openFreshProjectChatFn,
+  waitForComposerFn,
+  sendPromptAndWaitForResponseFn
+}) {
+  if (openFreshChat) {
+    logger(
+      `Opening a fresh chat in the same project. Switching to conversation ${conversationIndex}/${totalConversations}.`
+    );
+    await openFreshProjectChatFn(page, config);
+    await waitForComposerFn(page);
+  }
+
+  if (!tipsPrompt) {
+    return;
+  }
+
+  logger(`Sending tips prompt for conversation ${conversationIndex}/${totalConversations}.`);
+  await sendPromptAndWaitForResponseFn(page, tipsPrompt, config);
+  logger(`Tips prompt completed for conversation ${conversationIndex}/${totalConversations}.`);
+  await waitForComposerFn(page);
+}
+
+function getConfiguredTipsPrompt(config) {
+  return String(config.workflow.tipsPrompt || "").trim();
 }
 
 function getTotalConversations(config) {
@@ -247,8 +315,12 @@ function getOverallRunIndex(loops) {
   return loops + 1;
 }
 
-main().catch(async (error) => {
-  console.error(error.stack || error.message);
-  await rl.close();
-  process.exitCode = 1;
-});
+const isDirectRun =
+  Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  main().catch(async (error) => {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+  });
+}

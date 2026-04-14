@@ -79,6 +79,14 @@ export async function sendPromptInCurrentChatAndWaitForResponse(page, prompt, wo
   return waitForStableAssistantMessage(page, workflow);
 }
 
+export async function sendPromptAndWaitForResponse(page, prompt, config) {
+  if (isProjectHomeUrl(page.url(), config.chatgpt.projectUrl)) {
+    return sendPromptWithFreshChatRecovery(page, prompt, config);
+  }
+
+  return sendPromptInCurrentChatAndWaitForResponse(page, prompt, config.workflow);
+}
+
 export async function openFreshProjectChat(page, config) {
   if (!config.chatgpt.projectUrl) {
     throw new Error("Missing chatgpt.projectUrl. Run bootstrap again.");

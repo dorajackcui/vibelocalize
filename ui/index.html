@@ -83,7 +83,7 @@
         color: var(--muted);
       }
 
-      input, select {
+      input, select, textarea {
         width: 100%;
         margin-top: 6px;
         padding: 12px 14px;
@@ -92,6 +92,13 @@
         font-size: 15px;
         background: #fff;
         color: var(--ink);
+      }
+
+      textarea {
+        min-height: 112px;
+        resize: vertical;
+        line-height: 1.5;
+        font-family: inherit;
       }
 
       input[readonly] {
@@ -351,6 +358,14 @@
               newConversationLimit
               <input id="newConversationLimit" name="newConversationLimit" type="number" min="0">
             </label>
+            <label>
+              tipsPrompt
+              <textarea
+                id="tipsPrompt"
+                name="tipsPrompt"
+                placeholder="Optional conversation-wide instruction sent once whenever a fresh chat starts"
+              ></textarea>
+            </label>
             <div class="auto-summary" id="sheet-analysis-summary">
               <strong>自动识别结果</strong>
               <p id="sheet-analysis-text">选择文件后，会自动识别 source / target 列和开始行。</p>
@@ -428,7 +443,7 @@
     </div>
 
     <script>
-      const fields = ["batchSize", "resetConversationEveryRuns", "newConversationLimit", "startRow", "sourceColumn", "targetColumn"];
+      const fields = ["batchSize", "resetConversationEveryRuns", "newConversationLimit", "startRow", "sourceColumn", "targetColumn", "tipsPrompt"];
       const messageEl = document.getElementById("message");
       const warningEl = document.getElementById("warning");
       const logEl = document.getElementById("log");
@@ -562,7 +577,8 @@
             newConversationLimit: Number(document.getElementById("newConversationLimit").value),
             startRow: Number(document.getElementById("startRow").value),
             sourceColumn: document.getElementById("sourceColumn").value.trim().toUpperCase(),
-            targetColumn: document.getElementById("targetColumn").value.trim().toUpperCase()
+            targetColumn: document.getElementById("targetColumn").value.trim().toUpperCase(),
+            tipsPrompt: document.getElementById("tipsPrompt").value
           }
         };
       }
@@ -634,6 +650,14 @@
           const workbook = config.workbook;
           appliedSummaryEl.textContent =
             `已确认参数：${workflow.sourceColumn} -> ${workflow.targetColumn}，起始行 ${workflow.startRow}，每批 ${workflow.batchSize} 行，每个对话 ${workflow.resetConversationEveryRuns} 轮，新对话上限 ${workflow.newConversationLimit}，工作表 ${workbook.sheetName || "未选"}。`;
+        }
+
+        if (config) {
+          const workflow = config.workflow;
+          const workbook = config.workbook;
+          const tipsStatus = workflow.tipsPrompt ? "tips prompt configured" : "tips prompt disabled";
+          appliedSummaryEl.textContent =
+            `Confirmed: ${workflow.sourceColumn} -> ${workflow.targetColumn}, start row ${workflow.startRow}, batch ${workflow.batchSize}, ${workflow.resetConversationEveryRuns} runs per conversation, new conversation limit ${workflow.newConversationLimit}, sheet ${workbook.sheetName || "not selected"}, ${tipsStatus}.`;
         }
 
         const warnings = [];

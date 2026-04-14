@@ -39,6 +39,7 @@ test("normalizeConfig clamps numeric values and uppercases columns", () => {
       startRow: "-8",
       resetConversationEveryRuns: "0",
       newConversationLimit: "-1",
+      tipsPrompt: "\n  First line\nSecond line  \n",
       maxLoops: "-10"
     }
   });
@@ -53,7 +54,12 @@ test("normalizeConfig clamps numeric values and uppercases columns", () => {
   assert.equal(normalized.workflow.startRow, 1);
   assert.equal(normalized.workflow.resetConversationEveryRuns, 1);
   assert.equal(normalized.workflow.newConversationLimit, 0);
+  assert.equal(normalized.workflow.tipsPrompt, "First line\nSecond line");
   assert.equal(normalized.workflow.maxLoops, 0);
+});
+
+test("default config includes an empty tips prompt", () => {
+  assert.equal(DEFAULT_CONFIG.workflow.tipsPrompt, "");
 });
 
 test("buildDerivedInfo reports total conversations, runs, and rows", () => {

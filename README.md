@@ -38,3 +38,9 @@
 - `npm run ui`
 - `npm run run`
 - `node scripts/chatgpt-wps-loop.mjs --max-loops=1`
+
+## Tips Prompt
+
+- `workflow.tipsPrompt` is optional and can be edited in the UI.
+- When it is non-empty, every fresh conversation sends this prompt first, waits for ChatGPT to finish, and only then sends the first batch prompt for that conversation.
+- The tips reply is not parsed and is never written back to Excel.

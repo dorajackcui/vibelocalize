@@ -30,6 +30,7 @@ export const DEFAULT_CONFIG = {
     batchSize: 50,
     resetConversationEveryRuns: 8,
     newConversationLimit: 5,
+    tipsPrompt: "",
     pollIntervalMs: 2000,
     responseTimeoutMs: 240000,
     maxLoops: 0,
@@ -100,6 +101,7 @@ export function normalizeConfig(config) {
     0,
     readNumber(workflow.newConversationLimit, DEFAULT_CONFIG.workflow.newConversationLimit)
   );
+  workflow.tipsPrompt = String(workflow.tipsPrompt ?? DEFAULT_CONFIG.workflow.tipsPrompt).trim();
   workflow.maxLoops = Math.max(0, readNumber(workflow.maxLoops, DEFAULT_CONFIG.workflow.maxLoops));
   workflow.sourceColumn = String(workflow.sourceColumn || DEFAULT_CONFIG.workflow.sourceColumn).trim().toUpperCase();
   workflow.targetColumn = String(workflow.targetColumn || DEFAULT_CONFIG.workflow.targetColumn).trim().toUpperCase();
