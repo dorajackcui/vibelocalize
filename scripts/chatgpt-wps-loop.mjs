@@ -28,44 +28,27 @@ import {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const config = await loadOrCreateConfig();
-  const rl = readline.createInterface({ input, output });
-  let browserSession = null;
 
-  try {
-    browserSession = await launchBrowser(config);
-    let { page } = browserSession;
+  if (args.bootstrap) {
+    const rl = readline.createInterface({ input, output });
+    let browserSession = null;
 
-    if (!config.chatgpt.projectUrl || args.bootstrap) {
-      page = await bootstrapChatgpt(config, browserSession, rl);
-      if (args.bootstrap) {
-        console.log("Bootstrap complete. You can now run: npm run run");
-        return;
-      }
+    try {
+      browserSession = await launchBrowser(config);
+      await bootstrapChatgpt(config, browserSession, rl);
+      console.log("Bootstrap complete. You can now run: npm run run");
+      return;
+    } finally {
+      await browserSession?.close();
+      await rl.close();
     }
-
-    if (!config.workbook.filePath) {
-      throw new Error("No workbook selected. Choose a file in the UI or set workbook.filePath in automation.config.json.");
-    }
-
-    const writeCheck = await getWorkbookWriteCheck(config.workbook.filePath);
-    if (!writeCheck.ok) {
-      throw new Error(formatWorkbookWriteIssue(writeCheck, config.workbook.filePath));
-    }
-
-    const startRow = args.fromRow ?? config.workflow.startRow;
-
-    await runLoop({
-      config,
-      page,
-      startRow,
-      runsInCurrentConversation: 0,
-      newConversationsOpened: 0,
-      maxLoopsOverride: args.maxLoops
-    });
-  } finally {
-    await browserSession?.close();
-    await rl.close();
   }
+
+  await runConfiguredLoop({
+    config,
+    startRow: args.fromRow ?? config.workflow.startRow,
+    maxLoopsOverride: args.maxLoops
+  });
 }
 
 function parseArgs(argv) {
@@ -100,6 +83,7 @@ export async function runLoop({
 }, dependencies = {}) {
   const {
     logger = console.log,
+    shouldStopFn = () => false,
     openFreshProjectChatFn = openFreshProjectChat,
     waitForComposerFn = waitForComposer,
     sendPromptAndWaitForResponseFn = sendPromptAndWaitForResponse,
@@ -131,6 +115,8 @@ export async function runLoop({
   const reviewFindings = [];
 
   try {
+    throwIfStopRequested(shouldStopFn);
+
     if (tipsPrompt) {
       await prepareConversationForWork({
         page,
@@ -150,6 +136,12 @@ export async function runLoop({
       if (limit > 0 && loops >= limit) {
         stopReason = "Reached the max loop limit";
         logger("Reached the max loop limit and stopped.");
+        break;
+      }
+
+      if (shouldStopFn()) {
+        stopReason = "Stopped by user";
+        logger("Stop requested. Ending the run before the next batch.");
         break;
       }
 
@@ -178,6 +170,7 @@ export async function runLoop({
       }
 
       const values = await readWorkbookBatchFn(config, currentRow, batchSize);
+      throwIfStopRequested(shouldStopFn);
       if (config.workflow.stopWhenEntireBatchEmpty && values.every((item) => item.trim() === "")) {
         stopReason = "The whole batch is empty";
         logger("The whole batch is empty. Stopping here.");
@@ -195,7 +188,9 @@ export async function runLoop({
 
       const prompt = values.join("\n");
       await waitForComposerFn(page);
+      throwIfStopRequested(shouldStopFn);
       const responseText = await sendPromptAndWaitForResponseFn(page, prompt, config);
+      throwIfStopRequested(shouldStopFn);
       const outputMatrix = parseAssistantResponseToMatrixFn(responseText, config.response);
       const reviewFinding = buildBatchRowCountFindingFn({
         config,
@@ -225,8 +220,12 @@ export async function runLoop({
       runsInCurrentConversation += 1;
     }
   } catch (error) {
-    stopReason = `Stopped with error: ${error.message}`;
-    throw error;
+    if (shouldStopFn()) {
+      stopReason = "Stopped by user";
+    } else {
+      stopReason = `Stopped with error: ${error.message}`;
+      throw error;
+    }
   } finally {
     const elapsedMs = Date.now() - startedAt;
     let reviewReportPath = "";
@@ -258,6 +257,59 @@ export async function runLoop({
       reviewFindings,
       reviewReportPath
     }));
+  }
+}
+
+export async function runConfiguredLoop({
+  config,
+  startRow = config?.workflow?.startRow,
+  maxLoopsOverride = null,
+  logger = console.log,
+  shouldStopFn = () => false
+} = {}, dependencies = {}) {
+  const {
+    loadConfigFn = loadOrCreateConfig,
+    launchBrowserFn = launchBrowser,
+    runLoopFn = runLoop,
+    getWorkbookWriteCheckFn = getWorkbookWriteCheck,
+    formatWorkbookWriteIssueFn = formatWorkbookWriteIssue,
+    onBrowserSessionCreated = () => {}
+  } = dependencies;
+
+  const resolvedConfig = config ?? (await loadConfigFn());
+
+  if (!resolvedConfig.chatgpt.projectUrl) {
+    throw new Error("Bootstrap is incomplete. Run bootstrap first to capture chatgpt.projectUrl.");
+  }
+
+  if (!resolvedConfig.workbook.filePath) {
+    throw new Error("No workbook selected. Choose a file in the UI or set workbook.filePath in automation.config.json.");
+  }
+
+  const writeCheck = await getWorkbookWriteCheckFn(resolvedConfig.workbook.filePath);
+  if (!writeCheck.ok) {
+    throw new Error(formatWorkbookWriteIssueFn(writeCheck, resolvedConfig.workbook.filePath));
+  }
+
+  let browserSession = null;
+
+  try {
+    browserSession = await launchBrowserFn(resolvedConfig);
+    onBrowserSessionCreated(browserSession);
+    await runLoopFn({
+      config: resolvedConfig,
+      page: browserSession.page,
+      startRow: startRow ?? resolvedConfig.workflow.startRow,
+      runsInCurrentConversation: 0,
+      newConversationsOpened: 0,
+      maxLoopsOverride
+    }, {
+      ...dependencies,
+      logger,
+      shouldStopFn
+    });
+  } finally {
+    await browserSession?.close?.().catch(() => null);
   }
 }
 
@@ -313,6 +365,14 @@ function getCurrentConversationRoundIndex(runsInCurrentConversation) {
 
 function getOverallRunIndex(loops) {
   return loops + 1;
+}
+
+function throwIfStopRequested(shouldStopFn) {
+  if (!shouldStopFn()) {
+    return;
+  }
+
+  throw new Error("STOP_REQUESTED");
 }
 
 const isDirectRun =

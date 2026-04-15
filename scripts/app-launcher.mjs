@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import process from "node:process";
 import { openUrlInBrowser } from "./runtime-platform.mjs";
+import { getResourceRoot } from "./runtime-paths.mjs";
 const UI_URL = "http://127.0.0.1:4312";
 
 async function main() {
   const child = spawn(process.execPath, ["scripts/ui-server.mjs"], {
-    cwd: process.cwd(),
+    cwd: getResourceRoot(),
     stdio: "inherit"
   });
 

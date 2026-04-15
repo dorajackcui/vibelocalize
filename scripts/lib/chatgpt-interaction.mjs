@@ -1,13 +1,10 @@
 import path from "node:path";
-import process from "node:process";
 import {
   isConversationUrl,
   isProjectHomeUrl,
   normalizeComparableUrl
 } from "./chatgpt-url.mjs";
-
-const ROOT = process.cwd();
-const DEBUG_DIR = path.join(ROOT, "debug");
+import { getDebugDir } from "../runtime-paths.mjs";
 const COMPOSER_SELECTORS = [
   "#prompt-textarea",
   "textarea[placeholder]",
@@ -172,7 +169,7 @@ export async function openFreshProjectChat(page, config) {
     }
   }
 
-  const debugPath = path.join(DEBUG_DIR, `project-open-failed-${Date.now()}.png`);
+  const debugPath = path.join(getDebugDir(), `project-open-failed-${Date.now()}.png`);
   await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
   throw new Error(
     `Could not open a fresh chat from the project page. Screenshot saved to ${debugPath}.`
@@ -239,7 +236,7 @@ export async function waitForFreshConversationCreation(page, config, promptState
     await page.waitForTimeout(500);
   }
 
-  const debugPath = path.join(DEBUG_DIR, `fresh-chat-create-failed-${Date.now()}.png`);
+  const debugPath = path.join(getDebugDir(), `fresh-chat-create-failed-${Date.now()}.png`);
   await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
   const error = new Error(
     `Timed out while waiting for a fresh project chat to be created. Screenshot saved to ${debugPath}`
@@ -278,7 +275,7 @@ export async function waitForStableAssistantMessage(page, workflow) {
     await page.waitForTimeout(workflow.pollIntervalMs);
   }
 
-  const debugPath = path.join(DEBUG_DIR, `timeout-${Date.now()}.png`);
+  const debugPath = path.join(getDebugDir(), `timeout-${Date.now()}.png`);
   await page.screenshot({ path: debugPath, fullPage: true });
   throw new Error(`Timed out while waiting for ChatGPT. Screenshot saved to ${debugPath}`);
 }
@@ -488,7 +485,7 @@ async function isButtonEnabled(buttonLocator) {
 }
 
 async function buildPromptDraftFailure(page) {
-  const debugPath = path.join(DEBUG_DIR, `prompt-draft-failed-${Date.now()}.png`);
+  const debugPath = path.join(getDebugDir(), `prompt-draft-failed-${Date.now()}.png`);
   await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
   const error = new Error(
     `ChatGPT showed the composer, but the prompt text never appeared in the draft area. Screenshot saved to ${debugPath}`
@@ -498,7 +495,7 @@ async function buildPromptDraftFailure(page) {
 }
 
 async function buildPromptReadyFailure(page) {
-  const debugPath = path.join(DEBUG_DIR, `prompt-not-ready-${Date.now()}.png`);
+  const debugPath = path.join(getDebugDir(), `prompt-not-ready-${Date.now()}.png`);
   await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
   const error = new Error(
     `ChatGPT showed the composer, but the send button never became ready. Screenshot saved to ${debugPath}`
@@ -508,7 +505,7 @@ async function buildPromptReadyFailure(page) {
 }
 
 async function buildPromptSubmissionFailure(page) {
-  const debugPath = path.join(DEBUG_DIR, `prompt-submit-failed-${Date.now()}.png`);
+  const debugPath = path.join(getDebugDir(), `prompt-submit-failed-${Date.now()}.png`);
   await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
   const error = new Error(
     `Clicked send, but ChatGPT never confirmed that the prompt was submitted. Screenshot saved to ${debugPath}`

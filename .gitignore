@@ -4,3 +4,4 @@ automation.config.json
 automation.state.json
 debug
 .DS_Store
+dist

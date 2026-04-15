@@ -1,12 +1,17 @@
 import fs from "node:fs/promises";
 import http from "node:http";
-import path from "node:path";
+import { pathToFileURL } from "node:url";
 import process from "node:process";
-import { spawn } from "node:child_process";
 import {
   chooseWorkbookFile as chooseWorkbookFileWithDialog,
+  inspectExternalDependencies,
   openFileInDefaultApp
 } from "./runtime-platform.mjs";
+import {
+  getResourceRoot,
+  getRuntimeEnvironmentInfo,
+  getUiHtmlPath
+} from "./runtime-paths.mjs";
 import {
   buildDerivedInfo,
   isBootstrapMissing,
@@ -17,34 +22,86 @@ import {
 } from "./lib/automation-config.mjs";
 import {
   formatWorkbookWriteIssue,
-  inspectWorkbook,
-  getWorkbookWriteCheck
+  getWorkbookWriteCheck,
+  inspectWorkbook
 } from "./lib/workbook-service.mjs";
+import { createJobRunnerController } from "./lib/job-runner-controller.mjs";
+import { createBootstrapController } from "./lib/bootstrap-controller.mjs";
 
-const ROOT = process.cwd();
-const UI_PATH = path.join(ROOT, "ui", "index.html");
-const PORT = 4312;
+const DEFAULT_PORT = 4312;
+const DEFAULT_HOST = "127.0.0.1";
 
-const status = {
-  running: false,
-  pid: null,
-  lastExitCode: null,
-  logLines: [],
-  missingBootstrap: false,
-  missingWorkbook: true
-};
+export function createUiServer(options = {}) {
+  const {
+    port = DEFAULT_PORT,
+    host = DEFAULT_HOST,
+    uiPath = getUiHtmlPath(),
+    chooseWorkbookFile = () => chooseWorkbookFileWithDialog({ cwd: getResourceRoot() }),
+    openFileInDefaultAppFn = openFileInDefaultApp,
+    loadConfigFn = loadOrCreateConfig,
+    saveConfigFn = saveConfig,
+    mergeConfigFn = mergeConfig,
+    normalizeConfigFn = normalizeConfig,
+    inspectWorkbookFn = inspectWorkbook,
+    getWorkbookWriteCheckFn = getWorkbookWriteCheck,
+    formatWorkbookWriteIssueFn = formatWorkbookWriteIssue,
+    inspectEnvironmentFn = buildEnvironmentInfo,
+    runnerController = createJobRunnerController(),
+    bootstrapController = createBootstrapController()
+  } = options;
 
-let runner = null;
+  let server = null;
+  let activePort = port;
+  let environmentPromise = null;
 
-startServer();
+  const getEnvironment = async () => {
+    environmentPromise ??= inspectEnvironmentFn();
+    return environmentPromise;
+  };
 
-function startServer() {
-  const server = http.createServer(async (req, res) => {
+  const buildConfigPayload = async (configOverride) => {
+    const config = configOverride ?? (await loadConfigFn());
+    const workbookInspection = config.workbook.filePath
+      ? await inspectWorkbookFn(config.workbook.filePath, config.workbook.sheetName)
+      : null;
+    const workbookInfo = workbookInspection
+      ? {
+          sheetNames: workbookInspection.sheetNames,
+          activeSheetName: workbookInspection.activeSheetName
+        }
+      : null;
+    const bootstrap = {
+      ...bootstrapController.getSnapshot(),
+      completed: !isBootstrapMissing(config),
+      instructions: getBootstrapInstructions(),
+      lastCapturedProjectUrl: config.chatgpt.projectUrl || ""
+    };
+    const runnerStatus = runnerController.getSnapshot();
+    const status = {
+      ...runnerStatus,
+      missingBootstrap: isBootstrapMissing(config),
+      missingWorkbook: !config.workbook.filePath,
+      bootstrapInProgress: bootstrap.inProgress
+    };
+
+    return {
+      config,
+      status,
+      bootstrap,
+      environment: await getEnvironment(),
+      derived: buildDerivedInfo(config),
+      workbookInfo,
+      sheetAnalysis: workbookInspection?.sheetAnalysis ?? null,
+      writeCheck: config.workbook.filePath ? await getWorkbookWriteCheckFn(config.workbook.filePath) : null
+    };
+  };
+
+  const handleRequest = async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
 
       if (req.method === "GET" && url.pathname === "/") {
-        return respondHtml(res, await fs.readFile(UI_PATH, "utf8"));
+        return respondHtml(res, await fs.readFile(uiPath, "utf8"));
       }
 
       if (req.method === "GET" && url.pathname === "/api/config") {
@@ -53,15 +110,31 @@ function startServer() {
 
       if (req.method === "POST" && url.pathname === "/api/config") {
         const body = await readJsonBody(req);
-        const existing = await loadOrCreateConfig();
-        const nextConfig = normalizeConfig(
-          mergeConfig(existing, {
+        const existing = await loadConfigFn();
+        const nextConfig = normalizeConfigFn(
+          mergeConfigFn(existing, {
             workbook: body.workbook,
             workflow: body.workflow
           })
         );
 
-        await saveConfig(nextConfig);
+        await saveConfigFn(nextConfig);
+        return respondJson(res, 200, await buildConfigPayload(nextConfig));
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/bootstrap/config") {
+        const body = await readJsonBody(req);
+        const existing = await loadConfigFn();
+        const nextConfig = normalizeConfigFn(
+          mergeConfigFn(existing, {
+            browser: {
+              mode: body.browser?.mode,
+              debugPort: body.browser?.debugPort
+            }
+          })
+        );
+
+        await saveConfigFn(nextConfig);
         return respondJson(res, 200, await buildConfigPayload(nextConfig));
       }
 
@@ -81,10 +154,10 @@ function startServer() {
           throw error;
         }
 
-        const existing = await loadOrCreateConfig();
-        const workbookInfo = await inspectWorkbook(filePath);
-        const nextConfig = normalizeConfig(
-          mergeConfig(existing, {
+        const existing = await loadConfigFn();
+        const workbookInfo = await inspectWorkbookFn(filePath);
+        const nextConfig = normalizeConfigFn(
+          mergeConfigFn(existing, {
             workbook: {
               filePath,
               sheetName: workbookInfo.activeSheetName
@@ -92,7 +165,7 @@ function startServer() {
           })
         );
 
-        await saveConfig(nextConfig);
+        await saveConfigFn(nextConfig);
         return respondJson(res, 200, await buildConfigPayload(nextConfig));
       }
 
@@ -102,7 +175,7 @@ function startServer() {
           return respondJson(res, 400, { error: "Workbook file path is required." });
         }
 
-        return respondJson(res, 200, await inspectWorkbook(body.filePath, body.sheetName || ""));
+        return respondJson(res, 200, await inspectWorkbookFn(body.filePath, body.sheetName || ""));
       }
 
       if (req.method === "POST" && url.pathname === "/api/open-workbook") {
@@ -114,7 +187,7 @@ function startServer() {
         }
 
         await fs.access(filePath);
-        const opened = await openFileInDefaultApp(filePath);
+        const opened = await openFileInDefaultAppFn(filePath);
         if (!opened) {
           return respondJson(res, 400, {
             error: "Opening workbook files is only implemented for macOS and Windows."
@@ -124,50 +197,66 @@ function startServer() {
         return respondJson(res, 200, { ok: true });
       }
 
+      if (req.method === "POST" && url.pathname === "/api/bootstrap/start") {
+        const config = await loadConfigFn();
+        await bootstrapController.start(config);
+        return respondJson(res, 200, await buildConfigPayload(config));
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/bootstrap/complete") {
+        const config = await loadConfigFn();
+        const result = await bootstrapController.complete(config);
+        const nextConfig = normalizeConfigFn(result.updatedConfig ?? config);
+        await saveConfigFn(nextConfig);
+        return respondJson(res, 200, await buildConfigPayload(nextConfig));
+      }
+
       if (req.method === "POST" && url.pathname === "/api/run") {
-        if (runner) {
+        if (runnerController.getSnapshot().running) {
           return respondJson(res, 409, { error: "A job is already running." });
         }
 
-        const config = await loadOrCreateConfig();
+        if (bootstrapController.getSnapshot().inProgress) {
+          return respondJson(res, 409, {
+            error: "Bootstrap is still in progress. Complete it before starting a job."
+          });
+        }
+
+        const config = await loadConfigFn();
         if (isBootstrapMissing(config)) {
-          status.missingBootstrap = true;
           return respondJson(res, 400, {
-            error: "Bootstrap is incomplete. Please run `npm run bootstrap` once in Terminal."
+            error: "Bootstrap is incomplete. Use the in-app bootstrap flow first."
           });
         }
 
         if (!config.workbook.filePath) {
-          status.missingWorkbook = true;
           return respondJson(res, 400, {
             error: "No workbook selected yet. Choose a file first."
           });
         }
 
-        const writeCheck = await getWorkbookWriteCheck(config.workbook.filePath);
+        const writeCheck = await getWorkbookWriteCheckFn(config.workbook.filePath);
         if (!writeCheck.ok) {
           return respondJson(res, 400, {
-            error: formatWorkbookWriteIssue(writeCheck, config.workbook.filePath)
+            error: formatWorkbookWriteIssueFn(writeCheck, config.workbook.filePath)
           });
         }
 
-        startRunner();
-        return respondJson(res, 200, { ok: true });
+        await runnerController.start(config);
+        return respondJson(res, 200, await buildConfigPayload(config));
       }
 
       if (req.method === "POST" && url.pathname === "/api/stop") {
-        if (!runner) {
-          return respondJson(res, 200, { ok: true, message: "No running job." });
-        }
-
-        runner.kill("SIGTERM");
-        return respondJson(res, 200, { ok: true });
+        await runnerController.stop();
+        return respondJson(res, 200, await buildConfigPayload());
       }
 
       if (req.method === "GET" && url.pathname === "/api/status") {
         const payload = await buildConfigPayload();
         return respondJson(res, 200, {
           status: payload.status,
+          bootstrap: payload.bootstrap,
+          environment: payload.environment,
           derived: payload.derived,
           workbookInfo: payload.workbookInfo,
           sheetAnalysis: payload.sheetAnalysis,
@@ -179,94 +268,85 @@ function startServer() {
     } catch (error) {
       respondJson(res, 500, { error: error.message });
     }
-  });
-
-  server.listen(PORT, "127.0.0.1", () => {
-    console.log(`UI ready at http://127.0.0.1:${PORT}`);
-  });
-}
-
-async function buildConfigPayload(configOverride) {
-  const config = configOverride ?? (await loadOrCreateConfig());
-  const workbookInspection = config.workbook.filePath
-    ? await inspectWorkbook(config.workbook.filePath, config.workbook.sheetName)
-    : null;
-  const workbookInfo = workbookInspection
-    ? {
-        sheetNames: workbookInspection.sheetNames,
-        activeSheetName: workbookInspection.activeSheetName
-      }
-    : null;
-  const sheetAnalysis = workbookInspection?.sheetAnalysis ?? null;
-  const writeCheck = config.workbook.filePath ? await getWorkbookWriteCheck(config.workbook.filePath) : null;
-
-  status.missingBootstrap = isBootstrapMissing(config);
-  status.missingWorkbook = !config.workbook.filePath;
+  };
 
   return {
-    config,
-    status,
-    derived: buildDerivedInfo(config),
-    workbookInfo,
-    sheetAnalysis,
-    writeCheck
+    async start() {
+      if (server?.listening) {
+        return this;
+      }
+
+      server = http.createServer((req, res) => {
+        handleRequest(req, res);
+      });
+
+      await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(port, host, () => {
+          const address = server.address();
+          activePort = typeof address === "object" && address ? address.port : port;
+          server.off("error", reject);
+          resolve();
+        });
+      });
+
+      return this;
+    },
+
+    async close() {
+      await Promise.allSettled([
+        runnerController.close?.(),
+        bootstrapController.close?.()
+      ]);
+
+      if (!server) {
+        return;
+      }
+
+      const currentServer = server;
+      server = null;
+      await new Promise((resolve, reject) => {
+        currentServer.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        });
+      });
+    },
+
+    getPort() {
+      return activePort;
+    },
+
+    getUrl() {
+      return `http://${host}:${activePort}`;
+    }
   };
 }
 
-function startRunner() {
-  status.running = true;
-  status.pid = null;
-  status.lastExitCode = null;
-  appendLog(`Starting job at ${new Date().toLocaleString()}`);
-
-  runner = spawn(process.execPath, ["scripts/chatgpt-wps-loop.mjs"], {
-    cwd: ROOT,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-
-  status.pid = runner.pid;
-
-  runner.stdout.on("data", (chunk) => {
-    appendLog(chunk.toString());
-  });
-
-  runner.stderr.on("data", (chunk) => {
-    appendLog(chunk.toString());
-  });
-
-  runner.on("close", (code) => {
-    status.running = false;
-    status.pid = null;
-    status.lastExitCode = code;
-    appendLog(`Job finished with exit code ${code}`);
-    runner = null;
-  });
-
-  runner.on("error", (error) => {
-    status.running = false;
-    status.pid = null;
-    status.lastExitCode = 1;
-    appendLog(`Runner error: ${error.message}`);
-    runner = null;
-  });
+export async function startUiServer(options = {}) {
+  const server = createUiServer(options);
+  await server.start();
+  return server;
 }
 
-function appendLog(text) {
-  const lines = text
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    status.logLines.push(`[${new Date().toLocaleTimeString()}] ${line}`);
-  }
-
-  status.logLines = status.logLines.slice(-300);
+async function buildEnvironmentInfo() {
+  return {
+    ...getRuntimeEnvironmentInfo(),
+    dependencies: await inspectExternalDependencies()
+  };
 }
 
-async function chooseWorkbookFile() {
-  return chooseWorkbookFileWithDialog({ cwd: ROOT });
+function getBootstrapInstructions() {
+  return [
+    "点击“启动绑定”后，应用会尝试连接或拉起可调试的 Chrome。",
+    "在打开的 Chrome 里登录 ChatGPT，并完成任何人机验证。",
+    "打开目标 project 页面，或者该 project 内的任意对话。",
+    "回到应用点击“完成绑定”，保存 projectUrl。"
+  ];
 }
 
 function readJsonBody(req) {
@@ -300,4 +380,27 @@ function respondHtml(res, html) {
 function respondJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
+}
+
+async function main() {
+  const uiServer = await startUiServer();
+  console.log(`UI ready at ${uiServer.getUrl()}`);
+
+  const cleanup = async () => {
+    await uiServer.close().catch(() => null);
+    process.exit(0);
+  };
+
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
+}
+
+const isDirectRun =
+  Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  main().catch((error) => {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+  });
 }

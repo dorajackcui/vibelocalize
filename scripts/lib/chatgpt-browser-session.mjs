@@ -1,11 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import process from "node:process";
 import { chromium } from "playwright";
 import {
   buildManualChromeDebuggingCommand,
   launchChromeWithDebugPort
 } from "../runtime-platform.mjs";
+import { getDebugDir, resolveDataPath } from "../runtime-paths.mjs";
 import { saveConfig } from "./automation-config.mjs";
 import {
   deriveProjectUrl,
@@ -17,18 +17,15 @@ import {
   normalizeOptionalComparableUrl
 } from "./chatgpt-url.mjs";
 
-const ROOT = process.cwd();
-const DEBUG_DIR = path.join(ROOT, "debug");
-
 export async function launchBrowser(config) {
   if (config.browser.mode === "attach") {
     await ensureChromeDebugPort(config);
     return connectToExistingChrome(config);
   }
 
-  const userDataDir = path.resolve(ROOT, config.browser.userDataDir);
+  const userDataDir = resolveDataPath(config.browser.userDataDir);
   await fs.mkdir(userDataDir, { recursive: true });
-  await fs.mkdir(DEBUG_DIR, { recursive: true });
+  await fs.mkdir(getDebugDir(), { recursive: true });
 
   const context = await chromium.launchPersistentContext(userDataDir, {
     channel: config.browser.channel,
@@ -57,7 +54,7 @@ export async function ensureChromeDebugPort(config) {
     return;
   }
 
-  const userDataDir = path.resolve(ROOT, config.browser.userDataDir);
+  const userDataDir = resolveDataPath(config.browser.userDataDir);
   await fs.mkdir(userDataDir, { recursive: true });
 
   console.log(`Chrome debug port ${config.browser.debugPort} is not ready. Launching Google Chrome for you...`);
@@ -93,7 +90,7 @@ export async function connectToExistingChrome(config) {
     );
   }
 
-  await fs.mkdir(DEBUG_DIR, { recursive: true });
+  await fs.mkdir(getDebugDir(), { recursive: true });
   return {
     page,
     refreshPage: async () => {
@@ -186,6 +183,10 @@ export async function bootstrapChatgpt(config, browserSession, rl) {
   console.log("When that page is ready, press Enter here.");
   await rl.question("");
 
+  return completeBootstrapChatgpt(config, browserSession);
+}
+
+export async function completeBootstrapChatgpt(config, browserSession) {
   const pageCandidates =
     typeof browserSession.listPages === "function"
       ? await browserSession.listPages()

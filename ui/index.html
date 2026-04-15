@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -20,6 +20,10 @@
         box-sizing: border-box;
       }
 
+      [hidden] {
+        display: none !important;
+      }
+
       body {
         margin: 0;
         font-family: "SF Pro Text", "PingFang SC", sans-serif;
@@ -30,7 +34,7 @@
       }
 
       .wrap {
-        max-width: 980px;
+        max-width: 1040px;
         margin: 0 auto;
         padding: 32px 20px 48px;
       }
@@ -41,8 +45,9 @@
       }
 
       .lead {
-        margin: 0 0 24px;
+        margin: 0 0 18px;
         color: var(--muted);
+        line-height: 1.6;
       }
 
       .grid {
@@ -83,7 +88,9 @@
         color: var(--muted);
       }
 
-      input, select, textarea {
+      input,
+      select,
+      textarea {
         width: 100%;
         margin-top: 6px;
         padding: 12px 14px;
@@ -122,6 +129,11 @@
         cursor: pointer;
       }
 
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+
       .primary {
         background: var(--accent);
         color: white;
@@ -139,38 +151,23 @@
         border: 1px solid #fecdd3;
       }
 
-      .icon-btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 40px;
-        height: 40px;
-        padding: 0;
+      .hint,
+      .warning {
+        margin-top: 12px;
+        padding: 12px 14px;
         border-radius: 12px;
-        background: #fff;
-        color: var(--ink);
-        border: 1px solid var(--line);
-        transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+        font-size: 14px;
+        line-height: 1.6;
       }
 
-      .icon-btn:hover {
-        background: #f8f3ea;
-        border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
-        transform: translateY(-1px);
+      .hint {
+        background: #fff7ed;
+        color: var(--accent-strong);
       }
 
-      .icon-btn:active {
-        transform: translateY(0);
-      }
-
-      .icon-btn:focus-visible {
-        outline: 2px solid color-mix(in srgb, var(--accent) 55%, white);
-        outline-offset: 2px;
-      }
-
-      .icon-btn svg {
-        width: 18px;
-        height: 18px;
+      .warning {
+        background: #fff1f2;
+        color: var(--danger);
       }
 
       .meta {
@@ -190,23 +187,6 @@
         display: block;
         font-size: 24px;
         margin-bottom: 4px;
-      }
-
-      .hint, .warning {
-        margin-top: 14px;
-        padding: 12px 14px;
-        border-radius: 12px;
-        font-size: 14px;
-      }
-
-      .hint {
-        background: #fff7ed;
-        color: var(--accent-strong);
-      }
-
-      .warning {
-        background: #fff1f2;
-        color: var(--danger);
       }
 
       .file-stats {
@@ -278,7 +258,7 @@
       }
 
       .details-summary::after {
-        content: "展开";
+        content: "Expand";
         float: right;
         font-size: 12px;
         font-weight: 500;
@@ -286,11 +266,24 @@
       }
 
       .details-panel[open] .details-summary::after {
-        content: "收起";
+        content: "Collapse";
       }
 
       .details-content {
         padding: 0 16px 16px;
+      }
+
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        border-radius: 12px;
+        background: #fff;
+        color: var(--ink);
+        border: 1px solid var(--line);
       }
 
       pre {
@@ -310,144 +303,239 @@
   <body>
     <div class="wrap">
       <h1>Workbook + ChatGPT Loop</h1>
-      <p class="lead">首次先在终端运行一次 <code>npm run bootstrap</code> 绑定 ChatGPT project，之后日常直接 <code>npm start</code> 即可。</p>
+      <p class="lead">
+        The desktop app now starts with a bootstrap wizard. Bind the ChatGPT project first,
+        then continue to workbook and workflow settings.
+      </p>
 
-      <div class="grid">
-        <section class="panel">
-          <h2>文件</h2>
+      <div class="hint" id="message">Loading…</div>
+      <div class="warning" id="warning" hidden></div>
+
+      <section class="panel" id="bootstrap-setup-view" hidden>
+        <h2>Bootstrap Setup</h2>
+        <p class="lead" style="margin-bottom: 18px;">
+          Configure the Chrome connection settings first, then start the project binding flow.
+        </p>
+        <form id="bootstrap-form">
           <label>
-            Workbook Path
-            <input id="workbookPath" type="text" placeholder="可点“选择文件”，也可直接粘贴 Excel 路径">
+            Browser Mode
+            <select id="browserMode" name="browserMode">
+              <option value="attach">Attach to existing Chrome</option>
+              <option value="launch">Launch a dedicated Chrome window</option>
+            </select>
           </label>
           <label>
-            Sheet
-            <select id="sheetName"></select>
+            Chrome Debug Port
+            <input id="browserDebugPort" name="browserDebugPort" type="number" min="1">
           </label>
-          <div class="actions">
-            <button class="secondary" id="choose-file-btn" type="button">选择文件</button>
-            <button class="primary" id="save-btn" type="button">保存配置</button>
-            <button class="secondary" id="open-workbook-btn" type="button">打开Excel</button>
-          </div>
-          <div class="file-stats">
-            <div class="file-stat">
-              <strong id="source-row-count">-</strong>
-              <span>source 列数</span>
-            </div>
-            <div class="file-stat">
-              <strong id="untranslated-row-count">-</strong>
-              <span>未翻译列数</span>
-            </div>
-          </div>
-          <div class="hint">如果 Windows 文件弹窗没有正常返回，可以直接把 `.xlsx` 或 `.xlsm` 的完整路径粘贴到上面的输入框，再点“保存配置”。</div>
-          <div class="hint" id="message">加载中…</div>
-          <div class="warning" id="warning" hidden></div>
-        </section>
-
-        <section class="panel">
-          <h2>参数</h2>
-          <form id="config-form">
-            <label>
-              batchSize
-              <input id="batchSize" name="batchSize" type="number" min="1">
-            </label>
-            <label>
-              resetConversationEveryRuns
-              <input id="resetConversationEveryRuns" name="resetConversationEveryRuns" type="number" min="1">
-            </label>
-            <label>
-              newConversationLimit
-              <input id="newConversationLimit" name="newConversationLimit" type="number" min="0">
-            </label>
-            <label>
-              tipsPrompt
-              <textarea
-                id="tipsPrompt"
-                name="tipsPrompt"
-                placeholder="Optional conversation-wide instruction sent once whenever a fresh chat starts"
-              ></textarea>
-            </label>
-            <div class="auto-summary" id="sheet-analysis-summary">
-              <strong>自动识别结果</strong>
-              <p id="sheet-analysis-text">选择文件后，会自动识别 source / target 列和开始行。</p>
-            </div>
-            <details class="details-panel" id="manual-config-panel">
-              <summary class="details-summary">手动调整（自动识别失败或需覆盖时再展开）</summary>
-              <div class="details-content">
-                <label>
-                  startRow
-                  <input id="startRow" name="startRow" type="number" min="1">
-                </label>
-                <label>
-                  sourceColumn
-                  <input id="sourceColumn" name="sourceColumn" type="text" maxlength="4">
-                </label>
-                <label>
-                  targetColumn
-                  <input id="targetColumn" name="targetColumn" type="text" maxlength="4">
-                </label>
-              </div>
-            </details>
-          </form>
-          <div class="actions">
-            <button class="primary" id="apply-btn" type="button">确认参数</button>
-            <button class="secondary" id="run-btn" type="button">开始任务</button>
-            <button class="danger" id="stop-btn" type="button">停止任务</button>
-          </div>
-        </section>
-
-        <section class="panel">
-          <h2>概览</h2>
-          <div class="meta">
-            <div class="stat">
-              <strong id="total-conversations">0</strong>
-              <span>总对话窗口数</span>
-            </div>
-            <div class="stat">
-              <strong id="total-runs">0</strong>
-              <span>总循环次数</span>
-            </div>
-            <div class="stat">
-              <strong id="total-rows">0</strong>
-              <span>理论总行数</span>
-            </div>
-            <div class="stat">
-              <strong id="next-row">按配置</strong>
-              <span>当前起始行</span>
-            </div>
-          </div>
-          <div class="hint">
-            跑脚本时，最好不要同时在 WPS 里打开同一个文件，避免保存冲突。
-          </div>
-          <div class="hint" id="applied-summary">当前还没有确认参数。</div>
-        </section>
-      </div>
-
-      <section class="panel" style="margin-top: 16px;">
-        <div class="panel-header">
-          <h2>运行日志</h2>
-          <button
-            class="icon-btn"
-            id="copy-log-btn"
-            type="button"
-            title="复制日志"
-            aria-label="复制运行日志"
-          >
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <rect x="9" y="9" width="10" height="10" rx="2" stroke="currentColor" stroke-width="1.8"></rect>
-              <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
-            </svg>
-          </button>
+        </form>
+        <div class="hint" id="bootstrap-status-note"></div>
+        <div class="hint" id="bootstrap-environment-note"></div>
+        <div class="actions">
+          <button class="secondary" id="bootstrap-save-btn" type="button">Save Bootstrap Settings</button>
+          <button class="primary" id="bootstrap-start-btn" type="button">Start Binding</button>
+          <button class="primary" id="bootstrap-complete-btn" type="button">Complete Binding</button>
         </div>
-        <pre id="log"></pre>
+      </section>
+
+      <section class="panel" id="bootstrap-success-view" hidden>
+        <h2>Bootstrap Completed</h2>
+        <div class="hint">
+          The ChatGPT project was captured successfully. Review the captured project URL, then continue to the normal settings page.
+        </div>
+        <label style="margin-top: 16px;">
+          Captured Project URL
+          <input id="capturedProjectUrl" type="text" readonly>
+        </label>
+        <div class="actions">
+          <button class="primary" id="enter-config-btn" type="button">Enter App Settings</button>
+          <button class="secondary" id="bootstrap-again-btn" type="button">Rebind Project</button>
+        </div>
+      </section>
+
+      <section id="config-app-view" hidden>
+        <div class="panel" style="margin-bottom: 16px;">
+          <div class="panel-header">
+            <h2>App Settings</h2>
+            <button class="secondary" id="return-bootstrap-btn" type="button">Rebind ChatGPT Project</button>
+          </div>
+          <div class="hint" id="environment-note"></div>
+        </div>
+
+        <div class="grid">
+          <section class="panel">
+            <h2>Workbook</h2>
+            <label>
+              Workbook Path
+              <input id="workbookPath" type="text" placeholder="Choose a workbook file or paste its full path">
+            </label>
+            <label>
+              Sheet
+              <select id="sheetName"></select>
+            </label>
+            <div class="actions">
+              <button class="secondary" id="choose-file-btn" type="button">Choose Workbook</button>
+              <button class="primary" id="save-btn" type="button">Save Workbook Settings</button>
+              <button class="secondary" id="open-workbook-btn" type="button">Open in Excel</button>
+            </div>
+            <div class="file-stats">
+              <div class="file-stat">
+                <strong id="source-row-count">-</strong>
+                <span>Source rows</span>
+              </div>
+              <div class="file-stat">
+                <strong id="untranslated-row-count">-</strong>
+                <span>Untranslated rows</span>
+              </div>
+            </div>
+            <div class="hint">
+              If the file dialog is unavailable, paste the full path to a `.xlsx` or `.xlsm` file and save it here.
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Workflow</h2>
+            <form id="config-form">
+              <label>
+                batchSize
+                <input id="batchSize" name="batchSize" type="number" min="1">
+              </label>
+              <label>
+                resetConversationEveryRuns
+                <input id="resetConversationEveryRuns" name="resetConversationEveryRuns" type="number" min="1">
+              </label>
+              <label>
+                newConversationLimit
+                <input id="newConversationLimit" name="newConversationLimit" type="number" min="0">
+              </label>
+              <label>
+                tipsPrompt
+                <textarea
+                  id="tipsPrompt"
+                  name="tipsPrompt"
+                  placeholder="Optional conversation-wide instruction sent once whenever a fresh chat starts"
+                ></textarea>
+              </label>
+              <div class="auto-summary">
+                <strong>Auto Detection</strong>
+                <p id="sheet-analysis-text">Choose a workbook first to auto-detect source/target columns and the next start row.</p>
+              </div>
+              <details class="details-panel" id="manual-config-panel">
+                <summary class="details-summary">Manual Overrides</summary>
+                <div class="details-content">
+                  <label>
+                    startRow
+                    <input id="startRow" name="startRow" type="number" min="1">
+                  </label>
+                  <label>
+                    sourceColumn
+                    <input id="sourceColumn" name="sourceColumn" type="text" maxlength="4">
+                  </label>
+                  <label>
+                    targetColumn
+                    <input id="targetColumn" name="targetColumn" type="text" maxlength="4">
+                  </label>
+                </div>
+              </details>
+            </form>
+            <div class="actions">
+              <button class="primary" id="apply-btn" type="button">Apply Parameters</button>
+              <button class="secondary" id="run-btn" type="button">Start Job</button>
+              <button class="danger" id="stop-btn" type="button">Stop Job</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Overview</h2>
+            <div class="meta">
+              <div class="stat">
+                <strong id="total-conversations">0</strong>
+                <span>Total conversations</span>
+              </div>
+              <div class="stat">
+                <strong id="total-runs">0</strong>
+                <span>Total runs</span>
+              </div>
+              <div class="stat">
+                <strong id="total-rows">0</strong>
+                <span>Total rows</span>
+              </div>
+              <div class="stat">
+                <strong id="next-row">-</strong>
+                <span>Next start row</span>
+              </div>
+            </div>
+            <div class="hint">
+              Avoid opening the same workbook in Excel or WPS while the automation is writing back results.
+            </div>
+            <div class="hint" id="applied-summary">No workflow parameters have been confirmed yet.</div>
+          </section>
+        </div>
+
+        <section class="panel" style="margin-top: 16px;">
+          <div class="panel-header">
+            <h2>Run Log</h2>
+            <button class="icon-btn" id="copy-log-btn" type="button" title="Copy log" aria-label="Copy run log">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="9" y="9" width="10" height="10" rx="2" stroke="currentColor" stroke-width="1.8"></rect>
+                <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+              </svg>
+            </button>
+          </div>
+          <pre id="log"></pre>
+        </section>
       </section>
     </div>
-
     <script>
-      const fields = ["batchSize", "resetConversationEveryRuns", "newConversationLimit", "startRow", "sourceColumn", "targetColumn", "tipsPrompt"];
+      (() => {
+        const brokenMessageEl = document.getElementById("message");
+        const wrapEl = brokenMessageEl?.parentElement;
+        if (!brokenMessageEl || !wrapEl) {
+          return;
+        }
+
+        const messageEl = document.createElement("div");
+        messageEl.className = "hint";
+        messageEl.id = "message-temp";
+        messageEl.textContent = "Loading...";
+        wrapEl.insertBefore(messageEl, brokenMessageEl);
+
+        for (const child of Array.from(brokenMessageEl.childNodes)) {
+          wrapEl.insertBefore(child, brokenMessageEl);
+        }
+
+        brokenMessageEl.remove();
+        messageEl.id = "message";
+      })();
+    </script>
+    <script>
+      const workflowFields = [
+        "batchSize",
+        "resetConversationEveryRuns",
+        "newConversationLimit",
+        "startRow",
+        "sourceColumn",
+        "targetColumn",
+        "tipsPrompt"
+      ];
+
       const messageEl = document.getElementById("message");
       const warningEl = document.getElementById("warning");
-      const logEl = document.getElementById("log");
-      const copyLogBtn = document.getElementById("copy-log-btn");
+      const bootstrapSetupViewEl = document.getElementById("bootstrap-setup-view");
+      const bootstrapSuccessViewEl = document.getElementById("bootstrap-success-view");
+      const configAppViewEl = document.getElementById("config-app-view");
+      const bootstrapStatusNoteEl = document.getElementById("bootstrap-status-note");
+      const bootstrapEnvironmentNoteEl = document.getElementById("bootstrap-environment-note");
+      const environmentNoteEl = document.getElementById("environment-note");
+      const capturedProjectUrlEl = document.getElementById("capturedProjectUrl");
+      const browserModeEl = document.getElementById("browserMode");
+      const browserDebugPortEl = document.getElementById("browserDebugPort");
+      const bootstrapSaveBtnEl = document.getElementById("bootstrap-save-btn");
+      const bootstrapStartBtnEl = document.getElementById("bootstrap-start-btn");
+      const bootstrapCompleteBtnEl = document.getElementById("bootstrap-complete-btn");
+      const enterConfigBtnEl = document.getElementById("enter-config-btn");
+      const bootstrapAgainBtnEl = document.getElementById("bootstrap-again-btn");
+      const returnBootstrapBtnEl = document.getElementById("return-bootstrap-btn");
       const workbookPathEl = document.getElementById("workbookPath");
       const sheetNameEl = document.getElementById("sheetName");
       const appliedSummaryEl = document.getElementById("applied-summary");
@@ -455,8 +543,19 @@
       const manualConfigPanelEl = document.getElementById("manual-config-panel");
       const sourceRowCountEl = document.getElementById("source-row-count");
       const untranslatedRowCountEl = document.getElementById("untranslated-row-count");
+      const totalConversationsEl = document.getElementById("total-conversations");
+      const totalRunsEl = document.getElementById("total-runs");
+      const totalRowsEl = document.getElementById("total-rows");
+      const nextRowEl = document.getElementById("next-row");
+      const logEl = document.getElementById("log");
+      const copyLogBtn = document.getElementById("copy-log-btn");
+      const runBtnEl = document.getElementById("run-btn");
+
       let latestSheetAnalysis = null;
       let latestInspectionKey = "";
+      let latestPayload = null;
+      let bootstrapJustCompleted = false;
+      let forceBootstrapView = false;
 
       async function fetchJson(url, options) {
         const response = await fetch(url, {
@@ -479,93 +578,16 @@
         warningEl.textContent = text || "";
       }
 
-      function describeWriteCheck(writeCheck) {
-        if (!writeCheck || writeCheck.ok) {
-          return "";
-        }
-
-        switch (writeCheck.code) {
-          case "READ_ONLY_ATTRIBUTE":
-            return "当前目标 Excel 文件被标记为 read-only，请先关闭只读属性再运行。";
-          case "LOCKED_FOR_UPDATE":
-            return "当前目标 Excel 似乎正被 Excel/WPS 以只读或占用状态打开，请先关闭该文件的 read-only/只读占用后再运行。";
-          case "NO_WRITE_ACCESS":
-            return "当前目标 Excel 没有写权限，请先检查文件权限后再运行。";
-          case "NO_DIRECTORY_WRITE_ACCESS":
-            return "当前 Excel 所在目录不可写，程序无法生成临时文件后再覆盖原文件。";
-          default:
-            return writeCheck.detail
-              ? `目标 Excel 写入预检查失败：${writeCheck.detail}`
-              : "目标 Excel 写入预检查失败，请确认文件不是只读或被占用。";
-        }
+      function readBootstrapForm() {
+        return {
+          browser: {
+            mode: browserModeEl.value,
+            debugPort: Number(browserDebugPortEl.value)
+          }
+        };
       }
 
-      async function copyText(text) {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(text);
-          return;
-        }
-
-        const textarea = document.createElement("textarea");
-        textarea.value = text;
-        textarea.setAttribute("readonly", "true");
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.select();
-        const copied = document.execCommand("copy");
-        textarea.remove();
-        if (!copied) {
-          throw new Error("浏览器拒绝了复制请求");
-        }
-      }
-
-      function flashCopyButton(text) {
-        copyLogBtn.title = text;
-        copyLogBtn.setAttribute("aria-label", text);
-        clearTimeout(flashCopyButton.timer);
-        flashCopyButton.timer = window.setTimeout(() => {
-          copyLogBtn.title = "复制日志";
-          copyLogBtn.setAttribute("aria-label", "复制运行日志");
-        }, 1500);
-      }
-
-      function isLogPinnedToBottom() {
-        const distanceFromBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight;
-        return distanceFromBottom < 24;
-      }
-
-      function fillWorkflow(config) {
-        const workflow = config.workflow;
-        for (const name of fields) {
-          document.getElementById(name).value = workflow[name];
-        }
-      }
-
-      function fillWorkbook(config, workbookInfo) {
-        workbookPathEl.value = config.workbook.filePath || "";
-        const currentSheet = config.workbook.sheetName || workbookInfo?.activeSheetName || "";
-        const sheetNames = workbookInfo?.sheetNames || [];
-
-        sheetNameEl.innerHTML = "";
-        if (sheetNames.length === 0) {
-          const option = document.createElement("option");
-          option.value = "";
-          option.textContent = "先选择文件";
-          sheetNameEl.appendChild(option);
-          return;
-        }
-
-        for (const sheetName of sheetNames) {
-          const option = document.createElement("option");
-          option.value = sheetName;
-          option.textContent = sheetName;
-          option.selected = sheetName === currentSheet;
-          sheetNameEl.appendChild(option);
-        }
-      }
-
-      function readForm() {
+      function readWorkflowForm() {
         return {
           workbook: {
             filePath: workbookPathEl.value.trim(),
@@ -581,6 +603,41 @@
             tipsPrompt: document.getElementById("tipsPrompt").value
           }
         };
+      }
+
+      function fillBootstrap(config) {
+        browserModeEl.value = config.browser.mode || "attach";
+        browserDebugPortEl.value = config.browser.debugPort || 9222;
+      }
+
+      function fillWorkflow(config) {
+        const workflow = config.workflow;
+        for (const name of workflowFields) {
+          document.getElementById(name).value = workflow[name];
+        }
+      }
+
+      function fillWorkbook(config, workbookInfo) {
+        workbookPathEl.value = config.workbook.filePath || "";
+        const currentSheet = config.workbook.sheetName || workbookInfo?.activeSheetName || "";
+        const sheetNames = workbookInfo?.sheetNames || [];
+
+        sheetNameEl.innerHTML = "";
+        if (sheetNames.length === 0) {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "Choose a workbook first";
+          sheetNameEl.appendChild(option);
+          return;
+        }
+
+        for (const sheetName of sheetNames) {
+          const option = document.createElement("option");
+          option.value = sheetName;
+          option.textContent = sheetName;
+          option.selected = sheetName === currentSheet;
+          sheetNameEl.appendChild(option);
+        }
       }
 
       function buildInspectionKey(filePath, sheetName) {
@@ -624,19 +681,95 @@
 
         if (hasSuccessfulSheetAnalysis(sheetAnalysis)) {
           sheetAnalysisTextEl.textContent =
-            `已识别：source=${sheetAnalysis.sourceColumn}，target=${sheetAnalysis.targetColumn}，开始行 ${sheetAnalysis.startRow}。`;
+            `Detected source=${sheetAnalysis.sourceColumn}, target=${sheetAnalysis.targetColumn}, start row ${sheetAnalysis.startRow}.`;
           return;
         }
 
         sheetAnalysisTextEl.textContent =
-          sheetAnalysis?.message || "选择文件后，会自动识别 source / target 列和开始行。";
+          sheetAnalysis?.message || "Choose a workbook first to auto-detect source/target columns and the next start row.";
+      }
+
+      function describeWriteCheck(writeCheck) {
+        if (!writeCheck || writeCheck.ok) {
+          return "";
+        }
+
+        switch (writeCheck.code) {
+          case "READ_ONLY_ATTRIBUTE":
+            return "The workbook is marked read-only. Remove the file's read-only attribute before running.";
+          case "LOCKED_FOR_UPDATE":
+            return "The workbook appears to be open in Excel or WPS. Close it before running.";
+          case "NO_WRITE_ACCESS":
+            return "The workbook is not writable. Check the file permissions before running.";
+          case "NO_DIRECTORY_WRITE_ACCESS":
+            return "The workbook folder is not writable, so the app cannot create the temporary replacement file.";
+          default:
+            return writeCheck.detail ? `Workbook write check failed: ${writeCheck.detail}` : "Workbook write check failed.";
+        }
+      }
+
+      function formatDependencyStatus(label, dependency) {
+        if (!dependency) {
+          return `${label}: unknown`;
+        }
+
+        if (dependency.ok) {
+          const detail = dependency.command || dependency.path || dependency.detail || "ready";
+          return `${label}: ${detail}`;
+        }
+
+        return `${label}: missing`;
+      }
+
+      function renderEnvironment(environment) {
+        if (!environment) {
+          bootstrapEnvironmentNoteEl.textContent = "";
+          environmentNoteEl.textContent = "";
+          return;
+        }
+
+        const parts = [
+          `Mode: ${environment.appMode}`,
+          environment.usesPortableDataRoot ? "Data directory: portable/data" : `Data directory: ${environment.dataRoot}`,
+          formatDependencyStatus("Python", environment.dependencies?.python),
+          formatDependencyStatus("Chrome", environment.dependencies?.chrome)
+        ];
+        const summary = parts.join(" | ");
+        bootstrapEnvironmentNoteEl.textContent = summary;
+        environmentNoteEl.textContent = summary;
+      }
+
+      function renderBootstrapControls(bootstrap) {
+        const inProgress = Boolean(bootstrap?.inProgress);
+        const completed = Boolean(bootstrap?.completed);
+
+        bootstrapSaveBtnEl.disabled = inProgress;
+        bootstrapStartBtnEl.disabled = inProgress;
+        bootstrapCompleteBtnEl.disabled = !inProgress;
+        runBtnEl.disabled = inProgress || !completed;
+
+        if (inProgress) {
+          bootstrapStatusNoteEl.textContent =
+            "Binding is in progress. Open the target ChatGPT project in Chrome, then click Complete Binding here.";
+          return;
+        }
+
+        if (forceBootstrapView && completed) {
+          bootstrapStatusNoteEl.textContent =
+            "A project is already bound. Starting bootstrap again will replace the saved project binding.";
+          return;
+        }
+
+        bootstrapStatusNoteEl.textContent =
+          "Save the bootstrap settings if needed, start binding, then complete it after the target ChatGPT project is open in Chrome.";
       }
 
       function renderDerived(derived, status, config, writeCheck) {
-        document.getElementById("total-conversations").textContent = derived.totalConversations;
-        document.getElementById("total-runs").textContent = derived.totalRuns;
-        document.getElementById("total-rows").textContent = derived.totalRows;
-        document.getElementById("next-row").textContent = document.getElementById("startRow").value || "-";
+        totalConversationsEl.textContent = derived.totalConversations;
+        totalRunsEl.textContent = derived.totalRuns;
+        totalRowsEl.textContent = derived.totalRows;
+        nextRowEl.textContent = document.getElementById("startRow").value || "-";
+
         const nextLogText = (status.logLines || []).join("\n");
         if (nextLogText !== logEl.textContent) {
           const shouldStickToBottom = isLogPinnedToBottom();
@@ -645,33 +778,56 @@
             logEl.scrollTop = logEl.scrollHeight;
           }
         }
-        if (config) {
-          const workflow = config.workflow;
-          const workbook = config.workbook;
-          appliedSummaryEl.textContent =
-            `已确认参数：${workflow.sourceColumn} -> ${workflow.targetColumn}，起始行 ${workflow.startRow}，每批 ${workflow.batchSize} 行，每个对话 ${workflow.resetConversationEveryRuns} 轮，新对话上限 ${workflow.newConversationLimit}，工作表 ${workbook.sheetName || "未选"}。`;
-        }
 
-        if (config) {
-          const workflow = config.workflow;
-          const workbook = config.workbook;
-          const tipsStatus = workflow.tipsPrompt ? "tips prompt configured" : "tips prompt disabled";
-          appliedSummaryEl.textContent =
-            `Confirmed: ${workflow.sourceColumn} -> ${workflow.targetColumn}, start row ${workflow.startRow}, batch ${workflow.batchSize}, ${workflow.resetConversationEveryRuns} runs per conversation, new conversation limit ${workflow.newConversationLimit}, sheet ${workbook.sheetName || "not selected"}, ${tipsStatus}.`;
-        }
+        const workflow = config.workflow;
+        const workbook = config.workbook;
+        const tipsStatus = workflow.tipsPrompt ? "tips prompt configured" : "tips prompt disabled";
+        appliedSummaryEl.textContent =
+          `Confirmed: ${workflow.sourceColumn} -> ${workflow.targetColumn}, start row ${workflow.startRow}, batch ${workflow.batchSize}, ${workflow.resetConversationEveryRuns} runs per conversation, new conversation limit ${workflow.newConversationLimit}, sheet ${workbook.sheetName || "not selected"}, ${tipsStatus}.`;
 
         const warnings = [];
-        if (status.missingBootstrap) {
-          warnings.push("还没完成 bootstrap。请先在终端运行 npm run bootstrap 一次。");
-        }
-        if (status.missingWorkbook) {
-          warnings.push("还没选择工作簿文件。");
+        const showConfigWarnings =
+          !status.missingBootstrap &&
+          !status.bootstrapInProgress &&
+          !forceBootstrapView &&
+          !bootstrapJustCompleted;
+
+        if (showConfigWarnings && status.missingWorkbook) {
+          warnings.push("No workbook is selected yet.");
         }
         const writeWarning = describeWriteCheck(writeCheck);
-        if (writeWarning) {
+        if (showConfigWarnings && writeWarning) {
           warnings.push(writeWarning);
         }
         setWarning(warnings.join(" "));
+      }
+
+      function determineView(payload) {
+        const bootstrap = payload.bootstrap || {};
+
+        if (bootstrap.inProgress) {
+          return "bootstrap_setup";
+        }
+
+        if (forceBootstrapView) {
+          return "bootstrap_setup";
+        }
+
+        if (!bootstrap.completed) {
+          return "bootstrap_setup";
+        }
+
+        if (bootstrapJustCompleted) {
+          return "bootstrap_success";
+        }
+
+        return "config_app";
+      }
+
+      function renderView(view) {
+        bootstrapSetupViewEl.hidden = view !== "bootstrap_setup";
+        bootstrapSuccessViewEl.hidden = view !== "bootstrap_success";
+        configAppViewEl.hidden = view !== "config_app";
       }
 
       function syncUiFromPayload(payload, options = {}) {
@@ -679,6 +835,9 @@
           fillWorkflowFields = true,
           allowAutoFill = false
         } = options;
+
+        latestPayload = payload;
+        fillBootstrap(payload.config);
 
         if (fillWorkflowFields) {
           fillWorkflow(payload.config);
@@ -693,13 +852,30 @@
         }
 
         renderSheetAnalysis(payload.sheetAnalysis);
+        renderEnvironment(payload.environment || null);
+        renderBootstrapControls(payload.bootstrap || {});
         renderDerived(payload.derived, payload.status || {}, payload.config, payload.writeCheck);
+        capturedProjectUrlEl.value =
+          payload.bootstrap?.lastCapturedProjectUrl || payload.config.chatgpt.projectUrl || "";
+        renderView(determineView(payload));
+      }
+
+      function isLogPinnedToBottom() {
+        const distanceFromBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight;
+        return distanceFromBottom < 24;
+      }
+
+      async function saveBootstrapConfig() {
+        return fetchJson("/api/bootstrap/config", {
+          method: "POST",
+          body: JSON.stringify(readBootstrapForm())
+        });
       }
 
       async function refresh() {
         const data = await fetchJson("/api/config");
         syncUiFromPayload(data, { fillWorkflowFields: true, allowAutoFill: false });
-        setMessage(data.status && data.status.running ? "任务运行中" : "配置已加载");
+        setMessage(data.status && data.status.running ? "Job is running." : "Configuration loaded.");
       }
 
       async function inspectCurrentWorkbook(options = {}) {
@@ -726,14 +902,108 @@
         }
 
         renderSheetAnalysis(data.sheetAnalysis);
-        document.getElementById("next-row").textContent = document.getElementById("startRow").value || "-";
+        nextRowEl.textContent = document.getElementById("startRow").value || "-";
       }
+
+      async function copyText(text) {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) {
+          throw new Error("The browser rejected the copy request.");
+        }
+      }
+
+      function flashCopyButton(text) {
+        copyLogBtn.title = text;
+        copyLogBtn.setAttribute("aria-label", text);
+        clearTimeout(flashCopyButton.timer);
+        flashCopyButton.timer = window.setTimeout(() => {
+          copyLogBtn.title = "Copy log";
+          copyLogBtn.setAttribute("aria-label", "Copy run log");
+        }, 1500);
+      }
+
+      bootstrapSaveBtnEl.addEventListener("click", async () => {
+        try {
+          const data = await saveBootstrapConfig();
+          forceBootstrapView = true;
+          syncUiFromPayload(data, { fillWorkflowFields: true, allowAutoFill: false });
+          setMessage("Bootstrap settings were saved.");
+        } catch (error) {
+          setWarning(error.message);
+        }
+      });
+
+      bootstrapStartBtnEl.addEventListener("click", async () => {
+        try {
+          const saved = await saveBootstrapConfig();
+          forceBootstrapView = true;
+          syncUiFromPayload(saved, { fillWorkflowFields: true, allowAutoFill: false });
+          const data = await fetchJson("/api/bootstrap/start", { method: "POST" });
+          syncUiFromPayload(data, { fillWorkflowFields: true, allowAutoFill: false });
+          setMessage("Bootstrap browser is ready. Open the target ChatGPT project, then click Complete Binding.");
+        } catch (error) {
+          setWarning(error.message);
+        }
+      });
+
+      bootstrapCompleteBtnEl.addEventListener("click", async () => {
+        try {
+          const data = await fetchJson("/api/bootstrap/complete", { method: "POST" });
+          bootstrapJustCompleted = true;
+          forceBootstrapView = false;
+          syncUiFromPayload(data, { fillWorkflowFields: true, allowAutoFill: false });
+          setMessage("Bootstrap completed and the project URL was saved.");
+        } catch (error) {
+          setWarning(error.message);
+        }
+      });
+
+      enterConfigBtnEl.addEventListener("click", () => {
+        bootstrapJustCompleted = false;
+        if (latestPayload) {
+          renderView("config_app");
+        }
+        setMessage("You can now configure workbook and workflow settings.");
+      });
+
+      bootstrapAgainBtnEl.addEventListener("click", () => {
+        bootstrapJustCompleted = false;
+        forceBootstrapView = true;
+        if (latestPayload) {
+          renderView("bootstrap_setup");
+          renderBootstrapControls(latestPayload.bootstrap || {});
+        }
+        setMessage("Bootstrap setup is ready again. Start a new binding flow when you are ready.");
+      });
+
+      returnBootstrapBtnEl.addEventListener("click", () => {
+        bootstrapJustCompleted = false;
+        forceBootstrapView = true;
+        if (latestPayload) {
+          renderView("bootstrap_setup");
+          renderBootstrapControls(latestPayload.bootstrap || {});
+        }
+        setMessage("Returned to the bootstrap setup page.");
+      });
 
       document.getElementById("choose-file-btn").addEventListener("click", async () => {
         try {
           const data = await fetchJson("/api/choose-file", { method: "POST" });
           syncUiFromPayload(data, { fillWorkflowFields: true, allowAutoFill: true });
-          setMessage("文件已选择");
+          setMessage("Workbook selected.");
         } catch (error) {
           setWarning(error.message);
         }
@@ -744,12 +1014,12 @@
           syncDetectedFieldsBeforeSubmit();
           const data = await fetchJson("/api/config", {
             method: "POST",
-            body: JSON.stringify(readForm())
+            body: JSON.stringify(readWorkflowForm())
           });
           const shouldAutoFill =
             buildInspectionKey(data.config.workbook.filePath, data.config.workbook.sheetName) !== latestInspectionKey;
           syncUiFromPayload(data, { fillWorkflowFields: true, allowAutoFill: shouldAutoFill });
-          setMessage("配置已保存");
+          setMessage("Workbook settings saved.");
         } catch (error) {
           setWarning(error.message);
         }
@@ -763,7 +1033,7 @@
               filePath: workbookPathEl.value.trim()
             })
           });
-          setMessage("已尝试用默认程序打开当前 Excel 文件");
+          setMessage("Tried to open the current workbook with the default Excel application.");
         } catch (error) {
           setWarning(error.message);
         }
@@ -774,10 +1044,10 @@
           syncDetectedFieldsBeforeSubmit();
           const data = await fetchJson("/api/config", {
             method: "POST",
-            body: JSON.stringify(readForm())
+            body: JSON.stringify(readWorkflowForm())
           });
           syncUiFromPayload(data, { fillWorkflowFields: true, allowAutoFill: false });
-          setMessage("参数已确认并已应用");
+          setMessage("Workflow parameters applied.");
         } catch (error) {
           setWarning(error.message);
         }
@@ -788,12 +1058,12 @@
           syncDetectedFieldsBeforeSubmit();
           const saved = await fetchJson("/api/config", {
             method: "POST",
-            body: JSON.stringify(readForm())
+            body: JSON.stringify(readWorkflowForm())
           });
           syncUiFromPayload(saved, { fillWorkflowFields: true, allowAutoFill: false });
-          await fetchJson("/api/run", { method: "POST" });
-          setMessage("任务已启动");
-          await refreshStatusOnly();
+          const data = await fetchJson("/api/run", { method: "POST" });
+          syncUiFromPayload(data, { fillWorkflowFields: false, allowAutoFill: false });
+          setMessage("Job started.");
         } catch (error) {
           setWarning(error.message);
         }
@@ -802,32 +1072,37 @@
       sheetNameEl.addEventListener("change", async () => {
         try {
           await inspectCurrentWorkbook({ allowAutoFill: true });
-          setMessage("已按当前 sheet 更新自动识别结果");
+          setMessage("Updated auto-detection results for the selected sheet.");
         } catch (error) {
           setWarning(error.message);
         }
       });
 
       document.getElementById("stop-btn").addEventListener("click", async () => {
-        await fetchJson("/api/stop", { method: "POST" });
-        setMessage("已请求停止");
+        try {
+          const data = await fetchJson("/api/stop", { method: "POST" });
+          syncUiFromPayload(data, { fillWorkflowFields: false, allowAutoFill: false });
+          setMessage("Stop requested.");
+        } catch (error) {
+          setWarning(error.message);
+        }
       });
 
       copyLogBtn.addEventListener("click", async () => {
         const text = logEl.textContent || "";
         if (!text.trim()) {
-          setWarning("当前还没有可复制的日志。");
-          flashCopyButton("暂无日志");
+          setWarning("There is no log to copy yet.");
+          flashCopyButton("No log");
           return;
         }
 
         try {
           await copyText(text);
-          setMessage("运行日志已复制到剪贴板");
-          flashCopyButton("已复制");
+          setMessage("Run log copied to the clipboard.");
+          flashCopyButton("Copied");
         } catch (error) {
-          setWarning(`复制日志失败：${error.message}`);
-          flashCopyButton("复制失败");
+          setWarning(`Failed to copy the log: ${error.message}`);
+          flashCopyButton("Copy failed");
         }
       });
 
@@ -846,8 +1121,31 @@
           currentInspectionKey !== savedInspectionKey
             ? latestSheetAnalysis
             : (configData.sheetAnalysis || latestSheetAnalysis);
+
+        latestPayload = {
+          ...configData,
+          status: data.status || configData.status,
+          bootstrap: data.bootstrap || configData.bootstrap,
+          environment: data.environment || configData.environment,
+          derived: data.derived || configData.derived,
+          workbookInfo: data.workbookInfo || configData.workbookInfo,
+          sheetAnalysis: sheetAnalysisToRender,
+          writeCheck: configData.writeCheck || data.writeCheck
+        };
+
+        fillBootstrap(latestPayload.config);
         renderSheetAnalysis(sheetAnalysisToRender);
-        renderDerived(data.derived, data.status || {}, configData.config, configData.writeCheck || data.writeCheck);
+        renderEnvironment(latestPayload.environment || null);
+        renderBootstrapControls(latestPayload.bootstrap || {});
+        renderDerived(
+          latestPayload.derived,
+          latestPayload.status || {},
+          latestPayload.config,
+          latestPayload.writeCheck
+        );
+        capturedProjectUrlEl.value =
+          latestPayload.bootstrap?.lastCapturedProjectUrl || latestPayload.config.chatgpt.projectUrl || "";
+        renderView(determineView(latestPayload));
       }
 
       refresh().catch((error) => setWarning(error.message));

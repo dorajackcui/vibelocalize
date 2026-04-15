@@ -1,9 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import process from "node:process";
-
-const ROOT = process.cwd();
-export const DEBUG_DIR = path.join(ROOT, "debug");
+import { getDebugDir } from "../runtime-paths.mjs";
 
 export function buildBatchRowCountFinding({ config, startRow, sourceValues, outputMatrix }) {
   const expectedRowCount = sourceValues.length;
@@ -34,7 +31,7 @@ export async function writeReviewReport({
   elapsedMs,
   stopReason,
   reviewFindings,
-  debugDir = DEBUG_DIR
+  debugDir = getDebugDir()
 }) {
   await fs.mkdir(debugDir, { recursive: true });
   const reportPath = path.join(debugDir, `review-report-${Date.now()}.json`);

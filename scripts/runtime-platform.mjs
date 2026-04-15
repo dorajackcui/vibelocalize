@@ -126,6 +126,15 @@ export async function getPythonCommand() {
   return pythonCommandPromise;
 }
 
+export async function inspectExternalDependencies() {
+  const [python, chrome] = await Promise.all([
+    inspectPythonDependency(),
+    inspectChromeDependency()
+  ]);
+
+  return { python, chrome };
+}
+
 export async function launchChromeWithDebugPort({ debugPort, userDataDir }) {
   const chromeArgs = buildChromeDebuggingArgs({ debugPort, userDataDir });
   const manualCommand = buildManualChromeDebuggingCommand({ debugPort, userDataDir });
@@ -214,6 +223,54 @@ async function detectPythonCommand() {
   error.code = "PYTHON_NOT_FOUND";
   error.attemptedCommands = attemptedCommands;
   throw error;
+}
+
+async function inspectPythonDependency() {
+  try {
+    const pythonCommand = await getPythonCommand();
+    return {
+      ok: true,
+      command: pythonCommand.displayName
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error.code || "PYTHON_NOT_FOUND",
+      detail: error.message
+    };
+  }
+}
+
+async function inspectChromeDependency() {
+  if (process.platform === "darwin") {
+    return {
+      ok: true,
+      detail: "Google Chrome is required when running in attach mode."
+    };
+  }
+
+  if (process.platform !== "win32") {
+    return {
+      ok: false,
+      reason: "UNSUPPORTED_PLATFORM",
+      detail: "Automatic Chrome detection is only implemented for Windows and macOS."
+    };
+  }
+
+  const { chromePath, searchedPaths } = await findWindowsChromeExecutable();
+  if (chromePath) {
+    return {
+      ok: true,
+      path: chromePath
+    };
+  }
+
+  return {
+    ok: false,
+    reason: "CHROME_NOT_FOUND",
+    detail: "Could not find Google Chrome in the standard Windows install locations.",
+    searchedPaths
+  };
 }
 
 async function findWindowsChromeExecutable() {

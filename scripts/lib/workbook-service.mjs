@@ -1,10 +1,6 @@
-import path from "node:path";
-import process from "node:process";
 import { spawn } from "node:child_process";
 import { getPythonCommand } from "../runtime-platform.mjs";
-
-const ROOT = process.cwd();
-const WORKBOOK_HELPER = path.join(ROOT, "scripts", "workbook_helper.py");
+import { getResourceRoot, getWorkbookHelperPath } from "../runtime-paths.mjs";
 
 export async function getWorkbookInfo(filePath) {
   return runWorkbookHelper("info", { filePath });
@@ -44,7 +40,7 @@ export async function runWorkbookHelper(command, payload) {
   const pythonCommand = await getPythonCommand();
   const stdout = await runCommandWithInput(
     pythonCommand.command,
-    [...pythonCommand.args, WORKBOOK_HELPER, command],
+    [...pythonCommand.args, getWorkbookHelperPath(), command],
     JSON.stringify(payload),
     pythonCommand.displayName
   );
@@ -71,7 +67,15 @@ export function formatWorkbookWriteIssue(writeCheck, filePath) {
 
 export async function runCommandWithInput(command, args, inputText, commandDisplay = command) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      cwd: getResourceRoot(),
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: "utf-8",
+        PYTHONUTF8: "1"
+      }
+    });
     let stdout = "";
     let stderr = "";
 

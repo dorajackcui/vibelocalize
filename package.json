@@ -1,14 +1,46 @@
 {
   "name": "chatgpt-wps-automation",
+  "version": "0.1.0",
   "private": true,
+  "main": "electron/main.mjs",
   "type": "module",
   "scripts": {
     "bootstrap": "node scripts/chatgpt-wps-loop.mjs --bootstrap",
     "run": "node scripts/chatgpt-wps-loop.mjs",
     "ui": "node scripts/ui-server.mjs",
-    "start": "node scripts/app-launcher.mjs"
+    "start": "node scripts/app-launcher.mjs",
+    "desktop": "electron .",
+    "pack:win": "electron-builder --win portable"
   },
   "dependencies": {
     "playwright": "^1.54.0"
+  },
+  "build": {
+    "appId": "com.vibelocalize.app",
+    "productName": "VibeLocalize",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "scripts/**/*",
+      "ui/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "scripts/workbook_helper.py"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "VibeLocalize-${version}-portable.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1"
   }
 }

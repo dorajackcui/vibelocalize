@@ -1,10 +1,5 @@
 import fs from "node:fs/promises";
-import path from "node:path";
-import process from "node:process";
-
-const ROOT = process.cwd();
-
-export const CONFIG_PATH = path.join(ROOT, "automation.config.json");
+import { getConfigPath } from "../runtime-paths.mjs";
 
 export const DEFAULT_CONFIG = {
   browser: {
@@ -41,7 +36,11 @@ export const DEFAULT_CONFIG = {
   }
 };
 
-export async function loadOrCreateConfig(configPath = CONFIG_PATH) {
+export function CONFIG_PATH() {
+  return getConfigPath();
+}
+
+export async function loadOrCreateConfig(configPath = getConfigPath()) {
   try {
     const raw = await fs.readFile(configPath, "utf8");
     return normalizeConfig(mergeConfig(DEFAULT_CONFIG, JSON.parse(raw)));
@@ -55,7 +54,7 @@ export async function loadOrCreateConfig(configPath = CONFIG_PATH) {
   }
 }
 
-export async function saveConfig(config, configPath = CONFIG_PATH) {
+export async function saveConfig(config, configPath = getConfigPath()) {
   await fs.writeFile(configPath, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`, "utf8");
 }
 
