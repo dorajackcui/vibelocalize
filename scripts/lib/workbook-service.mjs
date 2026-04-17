@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { getPythonCommand } from "../runtime-platform.mjs";
-import { getResourceRoot, getWorkbookHelperPath } from "../runtime-paths.mjs";
+import { getDataRoot, getResourceRoot, getWorkbookHelperPath } from "../runtime-paths.mjs";
 
 export async function getWorkbookInfo(filePath) {
   return runWorkbookHelper("info", { filePath });
@@ -67,8 +67,10 @@ export function formatWorkbookWriteIssue(writeCheck, filePath) {
 
 export async function runCommandWithInput(command, args, inputText, commandDisplay = command) {
   return new Promise((resolve, reject) => {
+    const resourceRoot = getResourceRoot();
+    const cwd = resourceRoot.includes("app.asar") ? getDataRoot() : resourceRoot;
     const child = spawn(command, args, {
-      cwd: getResourceRoot(),
+      cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,

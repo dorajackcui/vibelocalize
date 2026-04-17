@@ -58,6 +58,26 @@ export async function openFileInDefaultApp(targetPath) {
 }
 
 export async function chooseWorkbookFile({ cwd } = {}) {
+  if (process.versions.electron) {
+    const { dialog, BrowserWindow } = await import("electron");
+    const parentWindow = BrowserWindow.getFocusedWindow();
+    const options = {
+      title: "Select workbook (.xlsx or .xlsm)",
+      filters: [{ name: "Excel Workbooks", extensions: ["xlsx", "xlsm"] }],
+      properties: ["openFile"],
+      ...(cwd ? { defaultPath: path.resolve(cwd) } : {})
+    };
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths.length) {
+      const error = new Error("File selection was cancelled.");
+      error.code = "FILE_SELECTION_CANCELLED";
+      throw error;
+    }
+    return normalizeWorkbookSelection(result.filePaths[0]);
+  }
+
   if (process.platform === "darwin") {
     try {
       const { stdout } = await execFileAsync(

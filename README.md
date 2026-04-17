@@ -38,6 +38,10 @@
 - `npm run ui`
 - `npm run run`
 - `node scripts/chatgpt-wps-loop.mjs --max-loops=1`
+- `npm run desktop`
+  以 Electron 开发模式启动桌面端（`electron .`）。
+- `npm run pack:win`
+  打包 Windows portable 版本（`electron-builder --win portable`），产物输出到 `dist/`。
 
 ## Tips Prompt
 

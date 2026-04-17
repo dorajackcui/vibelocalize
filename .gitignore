@@ -5,3 +5,4 @@ automation.state.json
 debug
 .DS_Store
 dist
+.claude/
