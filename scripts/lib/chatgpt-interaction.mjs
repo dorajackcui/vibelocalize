@@ -290,10 +290,42 @@ export async function getLatestAssistantText(page) {
   }
 
   const codeBlockText = await locator.evaluate((element) => {
+    const extractCodeBlockText = (node) => {
+      const lines = [];
+      let currentLine = "";
+
+      const appendNodeText = (currentNode) => {
+        if (currentNode.nodeName === "BR") {
+          lines.push(currentLine);
+          currentLine = "";
+          return;
+        }
+
+        if (currentNode.nodeType === 3) {
+          currentLine += currentNode.nodeValue || "";
+          return;
+        }
+
+        const children = Array.from(currentNode.childNodes || []);
+        if (children.length === 0) {
+          currentLine += currentNode.textContent || "";
+          return;
+        }
+
+        for (const child of children) {
+          appendNodeText(child);
+        }
+      };
+
+      appendNodeText(node);
+      lines.push(currentLine);
+      return lines.join("\n").trim();
+    };
+
     const codeNodes = Array.from(element.querySelectorAll("pre code"));
     if (codeNodes.length > 0) {
       return codeNodes
-        .map((node) => (node.textContent || "").trim())
+        .map((node) => extractCodeBlockText(node))
         .filter(Boolean)
         .join("\n\n");
     }

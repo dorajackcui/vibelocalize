@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  getLatestAssistantText,
   sendPromptInCurrentChatAndWaitForResponse,
   sendPromptWithFreshChatRecovery,
   waitForStableAssistantMessage
@@ -129,6 +130,37 @@ test("waitForStableAssistantMessage waits while a stop control is present", asyn
   });
 });
 
+test("getLatestAssistantText preserves br-separated lines inside code blocks", async () => {
+  const page = {
+    locator() {
+      return {
+        last() {
+          return {
+            count: async () => 1,
+            evaluate: async (callback) => callback({
+              querySelectorAll: () => [
+                {
+                  nodeName: "CODE",
+                  childNodes: [
+                    textElement("ok"),
+                    { nodeName: "BR", childNodes: [] },
+                    textElement("ok"),
+                    { nodeName: "BR", childNodes: [] },
+                    textElement("ok")
+                  ]
+                }
+              ]
+            }),
+            innerText: async () => "fallback"
+          };
+        }
+      };
+    }
+  };
+
+  assert.equal(await getLatestAssistantText(page), "ok\nok\nok");
+});
+
 test("sendPromptInCurrentChatAndWaitForResponse fails when the prompt never appears in the draft area", async () => {
   await withMockedClock(async (clock) => {
     const page = new MockPage({
@@ -227,6 +259,20 @@ async function withMockedClock(run) {
   } finally {
     Date.now = originalDateNow;
   }
+}
+
+function textElement(text) {
+  return {
+    nodeName: "SPAN",
+    childNodes: [
+      {
+        nodeName: "#text",
+        nodeType: 3,
+        nodeValue: text,
+        childNodes: []
+      }
+    ]
+  };
 }
 
 class MockPage {
