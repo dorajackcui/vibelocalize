@@ -83,6 +83,19 @@ export function countReviewFindingsByType(reviewFindings) {
   }, {});
 }
 
+export function buildReviewActionHint(reviewItems) {
+  const ranges = reviewItems
+    .map((item) => item.sourceRange)
+    .filter(Boolean)
+    .map(formatReviewSourceRange);
+
+  if (ranges.length === 0) {
+    return "";
+  }
+
+  return `Review: ${ranges.join("、")}`;
+}
+
 export function buildRunSummary({
   startRow,
   lastCompletedRow,
@@ -131,4 +144,16 @@ export function formatDuration(elapsedMs) {
   }
   parts.push(`${seconds}s`);
   return parts.join(" ");
+}
+
+function formatReviewSourceRange(sourceRange) {
+  const text = String(sourceRange);
+  const match = text.match(/^[A-Z]+(\d+)(?::[A-Z]+(\d+))?$/i);
+  if (!match) {
+    return text;
+  }
+
+  const startRow = Number(match[1]);
+  const endRow = Number(match[2] || match[1]);
+  return startRow === endRow ? `第 ${startRow} 行` : `第 ${startRow}-${endRow} 行`;
 }

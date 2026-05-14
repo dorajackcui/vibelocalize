@@ -20,6 +20,7 @@ import {
   inspectWorkbook,
   getWorkbookWriteCheck
 } from "./lib/workbook-service.mjs";
+import { buildReviewActionHint } from "./lib/review-report.mjs";
 
 const ROOT = process.cwd();
 const UI_PATH = path.join(ROOT, "ui", "index.html");
@@ -35,6 +36,7 @@ const status = {
 };
 
 let runner = null;
+let runnerReviewReportPath = "";
 
 startServer();
 
@@ -217,6 +219,7 @@ function startRunner() {
   status.running = true;
   status.pid = null;
   status.lastExitCode = null;
+  runnerReviewReportPath = "";
   appendLog(`Starting job at ${new Date().toLocaleString()}`);
 
   runner = spawn(process.execPath, ["scripts/chatgpt-wps-loop.mjs"], {
@@ -227,18 +230,20 @@ function startRunner() {
   status.pid = runner.pid;
 
   runner.stdout.on("data", (chunk) => {
-    appendLog(chunk.toString());
+    recordRunnerLog(chunk.toString());
   });
 
   runner.stderr.on("data", (chunk) => {
-    appendLog(chunk.toString());
+    recordRunnerLog(chunk.toString());
   });
 
-  runner.on("close", (code) => {
+  runner.on("close", async (code) => {
     status.running = false;
     status.pid = null;
     status.lastExitCode = code;
     appendLog(`Job finished with exit code ${code}`);
+    await appendFinalReviewHint(runnerReviewReportPath);
+    runnerReviewReportPath = "";
     runner = null;
   });
 
@@ -247,6 +252,7 @@ function startRunner() {
     status.pid = null;
     status.lastExitCode = 1;
     appendLog(`Runner error: ${error.message}`);
+    runnerReviewReportPath = "";
     runner = null;
   });
 }
@@ -258,11 +264,46 @@ function appendLog(text) {
     .map((line) => line.trimEnd())
     .filter(Boolean);
 
-  for (const line of lines) {
-    status.logLines.push(`[${new Date().toLocaleTimeString()}] ${line}`);
-  }
+  const stampedLines = lines.map((line) => `[${new Date().toLocaleTimeString()}] ${line}`);
+  status.logLines.push(...stampedLines);
 
   status.logLines = status.logLines.slice(-300);
+  return stampedLines;
+}
+
+function recordRunnerLog(text) {
+  const lines = appendLog(text);
+  const reportPath = findLatestReviewReportPath(lines);
+  if (reportPath) {
+    runnerReviewReportPath = reportPath;
+  }
+}
+
+async function appendFinalReviewHint(reportPath) {
+  if (!reportPath) {
+    return;
+  }
+
+  try {
+    const report = JSON.parse(await fs.readFile(reportPath, "utf8"));
+    const hint = buildReviewActionHint(report.review?.items || []);
+    if (hint) {
+      appendLog(hint);
+    }
+  } catch {
+    // The report hint is best-effort; keep the UI completion log quiet on read failures.
+  }
+}
+
+function findLatestReviewReportPath(logLines) {
+  for (let index = logLines.length - 1; index >= 0; index -= 1) {
+    const match = logLines[index].match(/review report (.+?review-report-\d+\.json)/);
+    if (match) {
+      return match[1].trim();
+    }
+  }
+
+  return "";
 }
 
 async function chooseWorkbookFile() {

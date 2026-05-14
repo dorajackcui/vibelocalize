@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   buildBatchRowCountFinding,
+  buildReviewActionHint,
   buildRunSummary,
   countReviewFindingsByType,
   formatDuration,
@@ -45,6 +46,19 @@ test("countReviewFindingsByType aggregates by issue type", () => {
     row_count_mismatch: 2,
     unknown_shape: 1
   });
+});
+
+test("buildReviewActionHint renders a minimal row review prompt", () => {
+  const hint = buildReviewActionHint([
+    { sourceRange: "B2:B9" },
+    { sourceRange: "B34:B41" }
+  ]);
+
+  assert.equal(hint, "Review: 第 2-9 行、第 34-41 行");
+});
+
+test("buildReviewActionHint returns empty text without review items", () => {
+  assert.equal(buildReviewActionHint([]), "");
 });
 
 test("buildRunSummary and formatDuration render compact output", () => {
