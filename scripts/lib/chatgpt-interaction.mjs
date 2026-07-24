@@ -29,6 +29,8 @@ const GENERATING_SELECTORS = [
 const PROMPT_DRAFT_TIMEOUT_MS = 8000;
 const PROMPT_READY_TIMEOUT_MS = 8000;
 const PROMPT_SUBMISSION_TIMEOUT_MS = 8000;
+const ASSISTANT_MESSAGE_SELECTOR = "[data-message-author-role='assistant']";
+const ASSISTANT_TEXT_TIMEOUT_MS = 120000;
 
 export async function waitForComposer(page) {
   const composer = await findVisibleComposer(page, 30000);
@@ -68,13 +70,8 @@ export async function hasVisibleComposer(page, timeoutMs = 0) {
 }
 
 export async function sendPromptInCurrentChatAndWaitForResponse(page, prompt, workflow) {
-  const { initialAssistantCount } = await sendPrompt(page, prompt);
-
-  await page.waitForFunction(
-    (count) => document.querySelectorAll("[data-message-author-role='assistant']").length > count,
-    initialAssistantCount,
-    { timeout: workflow.responseTimeoutMs }
-  );
+  const promptState = await sendPrompt(page, prompt);
+  await waitForAssistantResponseStart(page, promptState, workflow);
 
   return waitForStableAssistantMessage(page, workflow);
 }
@@ -188,28 +185,63 @@ export async function sendPromptWithFreshChatRecovery(page, prompt, config) {
       const promptState = await sendPrompt(page, prompt, config.chatgpt.projectUrl);
 
       await waitForFreshConversationCreation(page, config, promptState);
-
-      await page.waitForFunction(
-        (count) => document.querySelectorAll("[data-message-author-role='assistant']").length > count,
-        promptState.initialAssistantCount,
-        { timeout: config.workflow.responseTimeoutMs }
-      );
+      await waitForAssistantResponseStart(page, promptState, config.workflow);
 
       return await waitForStableAssistantMessage(page, config.workflow);
     } catch (error) {
       lastError = error;
-      if (error.code !== "FRESH_CHAT_CREATION_FAILED" || attempt >= maxAttempts) {
+      const recovery = await getFreshSubmissionRecoveryAction(
+        page,
+        error,
+        prompt,
+        config.chatgpt.projectUrl
+      );
+
+      if (recovery.action === "submitted") {
+        error.promptState.submissionEvidence = recovery.evidence;
+        await waitForFreshConversationCreation(page, config, error.promptState);
+        await waitForAssistantResponseStart(page, error.promptState, config.workflow);
+        return await waitForStableAssistantMessage(page, config.workflow);
+      }
+
+      if (recovery.action !== "retry" || attempt >= maxAttempts) {
         throw error;
       }
 
       console.log(
-        `Fresh project chat was not created successfully. Returning to the project page and retrying (${attempt + 1}/${maxAttempts}).`
+        `The fresh-chat prompt was definitely not submitted. Returning to the project page and retrying (${attempt + 1}/${maxAttempts}).`
       );
       await resetToProjectPage(page, config);
     }
   }
 
   throw lastError;
+}
+
+async function getFreshSubmissionRecoveryAction(page, error, prompt, projectUrl) {
+  if (
+    !["PROMPT_SUBMISSION_FAILED", "PROMPT_SUBMISSION_AMBIGUOUS"].includes(error?.code) ||
+    !error.promptState
+  ) {
+    return { action: "stop", evidence: null };
+  }
+
+  const latestEvidence = await getPromptSubmissionEvidence(
+    page,
+    error.promptState,
+    projectUrl,
+    prompt
+  );
+
+  if (latestEvidence.submitted) {
+    return { action: "submitted", evidence: latestEvidence };
+  }
+
+  if (error.retryable === true && latestEvidence.definitelyNotSubmitted) {
+    return { action: "retry", evidence: latestEvidence };
+  }
+
+  return { action: "stop", evidence: latestEvidence };
 }
 
 export async function waitForFreshConversationCreation(page, config, promptState) {
@@ -219,7 +251,7 @@ export async function waitForFreshConversationCreation(page, config, promptState
   while (Date.now() - start < timeoutMs) {
     const currentUrl = page.url();
     const userCount = await page.locator("[data-message-author-role='user']").count();
-    const assistantCount = await page.locator("[data-message-author-role='assistant']").count();
+    const assistantCount = await page.locator(ASSISTANT_MESSAGE_SELECTOR).count();
 
     if (isConversationUrl(currentUrl, config.chatgpt.projectUrl)) {
       return;
@@ -284,7 +316,7 @@ export async function waitForStableAssistantMessage(page, workflow) {
 }
 
 export async function getLatestAssistantText(page) {
-  const locator = page.locator("[data-message-author-role='assistant']").last();
+  const locator = page.locator(ASSISTANT_MESSAGE_SELECTOR).last();
   if ((await locator.count()) === 0) {
     return "";
   }
@@ -337,7 +369,7 @@ export async function getLatestAssistantText(page) {
     return codeBlockText;
   }
 
-  return (await locator.innerText()).trim();
+  return (await locator.innerText({ timeout: ASSISTANT_TEXT_TIMEOUT_MS })).trim();
 }
 
 export async function isGenerating(page) {
@@ -351,13 +383,15 @@ export async function isGenerating(page) {
 }
 
 async function capturePromptState(page) {
-  const assistantLocator = page.locator("[data-message-author-role='assistant']");
+  const assistantLocator = page.locator(ASSISTANT_MESSAGE_SELECTOR);
   const userLocator = page.locator("[data-message-author-role='user']");
 
   return {
     initialAssistantCount: await assistantLocator.count(),
     initialUserCount: await userLocator.count(),
-    initialUrl: page.url()
+    initialUrl: page.url(),
+    latestAssistantId: await getLatestAssistantMessageId(page),
+    latestAssistantText: await getLatestAssistantText(page)
   };
 }
 
@@ -367,7 +401,7 @@ async function sendPrompt(page, prompt, projectUrl = "") {
 
   await populateComposer(page, composerLocator, prompt);
   await submitPrompt(page);
-  await waitForPromptSubmission(page, promptState, projectUrl);
+  await waitForPromptSubmission(page, promptState, projectUrl, prompt);
 
   return promptState;
 }
@@ -389,33 +423,119 @@ async function submitPrompt(page) {
   await sendButton.click();
 }
 
-async function waitForPromptSubmission(page, promptState, projectUrl = "") {
+async function waitForPromptSubmission(page, promptState, projectUrl = "", prompt = "") {
   const startedAt = Date.now();
+  let evidence = null;
 
   while (Date.now() - startedAt < PROMPT_SUBMISSION_TIMEOUT_MS) {
-    const currentUrl = page.url();
-    const userCount = await page.locator("[data-message-author-role='user']").count();
-    const assistantCount = await page.locator("[data-message-author-role='assistant']").count();
-
-    if (userCount > promptState.initialUserCount || assistantCount > promptState.initialAssistantCount) {
-      return;
-    }
-
-    if (projectUrl && isConversationUrl(currentUrl, projectUrl)) {
-      return;
-    }
-
-    if (
-      normalizeComparableUrl(currentUrl) !== normalizeComparableUrl(promptState.initialUrl) &&
-      (!projectUrl || !isProjectHomeUrl(currentUrl, projectUrl))
-    ) {
+    evidence = await getPromptSubmissionEvidence(page, promptState, projectUrl, prompt);
+    if (evidence.submitted) {
+      promptState.submissionEvidence = evidence;
       return;
     }
 
     await page.waitForTimeout(250);
   }
 
-  throw await buildPromptSubmissionFailure(page);
+  evidence = await getPromptSubmissionEvidence(page, promptState, projectUrl, prompt);
+  if (evidence.definitelyNotSubmitted) {
+    throw await buildPromptSubmissionFailure(page, evidence, promptState);
+  }
+
+  throw await buildAmbiguousPromptSubmissionFailure(page, evidence, promptState);
+}
+
+async function getPromptSubmissionEvidence(page, promptState, projectUrl, prompt) {
+  const currentUrl = page.url();
+  const userCount = await page.locator("[data-message-author-role='user']").count();
+  const assistantCount = await page.locator(ASSISTANT_MESSAGE_SELECTOR).count();
+  const generating = await isGenerating(page);
+  const composer = await findVisibleComposer(page);
+  const composerVisible = Boolean(composer);
+  const composerText = composerVisible ? await getComposerText(composer) : "";
+  const sendButton = await findVisibleSendButton(page);
+  const sendButtonVisible = Boolean(sendButton);
+  const sendButtonEnabled = sendButtonVisible && await isButtonEnabled(sendButton);
+  const initialUrl = normalizeComparableUrl(promptState.initialUrl);
+  const normalizedCurrentUrl = normalizeComparableUrl(currentUrl);
+  const urlChanged = normalizedCurrentUrl !== initialUrl;
+  const conversationCreated = Boolean(projectUrl && isConversationUrl(currentUrl, projectUrl));
+  const navigatedAwayFromInitialPage =
+    urlChanged && (!projectUrl || !isProjectHomeUrl(currentUrl, projectUrl));
+  const userMessageAdded = userCount > promptState.initialUserCount;
+  const assistantMessageAdded = assistantCount > promptState.initialAssistantCount;
+  const submitted =
+    conversationCreated ||
+    navigatedAwayFromInitialPage ||
+    userMessageAdded ||
+    assistantMessageAdded ||
+    generating;
+  const draftMatchesPrompt =
+    composerVisible && normalizePromptText(composerText) === normalizePromptText(prompt);
+
+  return {
+    submitted,
+    definitelyNotSubmitted:
+      !submitted &&
+      !urlChanged &&
+      composerVisible &&
+      draftMatchesPrompt &&
+      sendButtonVisible &&
+      sendButtonEnabled,
+    conversationCreated,
+    urlChanged,
+    userMessageAdded,
+    assistantMessageAdded,
+    generating,
+    userCount,
+    assistantCount,
+    composerVisible,
+    composerCleared: composerVisible && composerText === "",
+    draftMatchesPrompt,
+    sendButtonVisible,
+    sendButtonEnabled,
+    currentUrl
+  };
+}
+
+function normalizePromptText(value) {
+  return String(value ?? "").replace(/\r\n?/g, "\n").trim();
+}
+
+async function waitForAssistantResponseStart(page, promptState, workflow) {
+  const startedAt = Date.now();
+  const pollIntervalMs = Math.max(1, Math.min(workflow.pollIntervalMs ?? 250, 250));
+
+  while (Date.now() - startedAt < workflow.responseTimeoutMs) {
+    const assistantCount = await page.locator(ASSISTANT_MESSAGE_SELECTOR).count();
+    const latestAssistantId = await getLatestAssistantMessageId(page);
+    const latestAssistantText = await getLatestAssistantText(page);
+
+    if (assistantCount > promptState.initialAssistantCount) {
+      return;
+    }
+
+    if (latestAssistantId && latestAssistantId !== promptState.latestAssistantId) {
+      return;
+    }
+
+    if (latestAssistantText && latestAssistantText !== promptState.latestAssistantText) {
+      return;
+    }
+
+    await page.waitForTimeout(pollIntervalMs);
+  }
+
+  throw await buildResponseStartFailure(page);
+}
+
+async function getLatestAssistantMessageId(page) {
+  const locator = page.locator(ASSISTANT_MESSAGE_SELECTOR).last();
+  if ((await locator.count()) === 0) {
+    return "";
+  }
+
+  return locator.evaluate((element) => element.getAttribute("data-message-id") || "").catch(() => "");
 }
 
 async function focusComposer(composerLocator) {
@@ -539,12 +659,38 @@ async function buildPromptReadyFailure(page) {
   return error;
 }
 
-async function buildPromptSubmissionFailure(page) {
+async function buildPromptSubmissionFailure(page, evidence, promptState) {
   const debugPath = path.join(DEBUG_DIR, `prompt-submit-failed-${Date.now()}.png`);
   await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
   const error = new Error(
     `Clicked send, but ChatGPT never confirmed that the prompt was submitted. Screenshot saved to ${debugPath}`
   );
   error.code = "PROMPT_SUBMISSION_FAILED";
+  error.retryable = true;
+  error.submissionEvidence = evidence;
+  error.promptState = promptState;
+  return error;
+}
+
+async function buildAmbiguousPromptSubmissionFailure(page, evidence, promptState) {
+  const debugPath = path.join(DEBUG_DIR, `prompt-submit-ambiguous-${Date.now()}.png`);
+  await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
+  const error = new Error(
+    `Clicked send, but the submission state became ambiguous. The prompt was not retried to avoid a duplicate message. Screenshot saved to ${debugPath}`
+  );
+  error.code = "PROMPT_SUBMISSION_AMBIGUOUS";
+  error.retryable = false;
+  error.submissionEvidence = evidence;
+  error.promptState = promptState;
+  return error;
+}
+
+async function buildResponseStartFailure(page) {
+  const debugPath = path.join(DEBUG_DIR, `response-start-failed-${Date.now()}.png`);
+  await page.screenshot({ path: debugPath, fullPage: true }).catch(() => null);
+  const error = new Error(
+    `Clicked send, but ChatGPT never showed a new assistant response. Screenshot saved to ${debugPath}`
+  );
+  error.code = "RESPONSE_START_FAILED";
   return error;
 }

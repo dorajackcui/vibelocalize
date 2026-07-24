@@ -62,7 +62,6 @@ test("sendPromptInCurrentChatAndWaitForResponse inserts text and waits for the s
     assert.deepEqual(page.insertedTexts, ["hello world"]);
     assert.equal(page.sendClickCount, 1);
     assert.equal(page.enterPressCount, 0);
-    assert.equal(page.waitForFunctionCallCount, 1);
   });
 });
 
@@ -101,7 +100,160 @@ test("sendPromptWithFreshChatRecovery accepts a conversation URL switch after se
     assert.deepEqual(page.insertedTexts, ["hello project"]);
     assert.equal(page.sendClickCount, 1);
     assert.equal(page.enterPressCount, 0);
-    assert.equal(page.waitForFunctionCallCount, 1);
+  });
+});
+
+test("sendPromptWithFreshChatRecovery retries when the first click definitely leaves the prompt unsubmitted", async () => {
+  await withMockedClock(async (clock) => {
+    let assistantCreated = false;
+    const projectUrl = "https://chatgpt.com/g/project-id/project";
+    const page = new MockPage({
+      clock,
+      initialUrl: projectUrl,
+      onInsertText: (state) => {
+        state.sendButtonVisible = true;
+        state.sendButtonEnabled = true;
+      },
+      onSubmit: (state, currentPage) => {
+        if (currentPage.sendClickCount >= 2) {
+          state.url = "https://chatgpt.com/g/project-id/c/recovered-conversation";
+        }
+      },
+      onWait: (state) => {
+        if (state.url !== projectUrl && !assistantCreated) {
+          assistantCreated = true;
+          state.assistantCount = 1;
+          state.latestAssistantText = "recovered reply";
+        }
+      }
+    });
+
+    const responseText = await sendPromptWithFreshChatRecovery(page, "retry this prompt", {
+      chatgpt: { projectUrl },
+      workflow: {
+        responseTimeoutMs: 100,
+        pollIntervalMs: 1
+      }
+    });
+
+    assert.equal(responseText, "recovered reply");
+    assert.deepEqual(page.insertedTexts, ["retry this prompt", "retry this prompt"]);
+    assert.equal(page.sendClickCount, 2);
+    assert.ok(page.gotoCalls.length >= 1);
+  });
+});
+
+test("sendPromptWithFreshChatRecovery does not retry an ambiguous cleared draft", async () => {
+  await withMockedClock(async (clock) => {
+    const projectUrl = "https://chatgpt.com/g/project-id/project";
+    const page = new MockPage({
+      clock,
+      initialUrl: projectUrl,
+      onInsertText: (state) => {
+        state.sendButtonVisible = true;
+        state.sendButtonEnabled = true;
+      },
+      onSubmit: (state) => {
+        state.composerText = "";
+      }
+    });
+
+    await assert.rejects(
+      () =>
+        sendPromptWithFreshChatRecovery(page, "do not duplicate this prompt", {
+          chatgpt: { projectUrl },
+          workflow: {
+            responseTimeoutMs: 100,
+            pollIntervalMs: 1
+          }
+        }),
+      (error) => {
+        assert.equal(error.code, "PROMPT_SUBMISSION_AMBIGUOUS");
+        assert.equal(error.retryable, false);
+        return true;
+      }
+    );
+
+    assert.deepEqual(page.insertedTexts, ["do not duplicate this prompt"]);
+    assert.equal(page.sendClickCount, 1);
+    assert.equal(page.gotoCalls.length, 0);
+  });
+});
+
+test("sendPromptWithFreshChatRecovery accepts submission evidence that appears just before retry", async () => {
+  await withMockedClock(async (clock) => {
+    let assistantCreated = false;
+    const projectUrl = "https://chatgpt.com/g/project-id/project";
+    const conversationUrl = "https://chatgpt.com/g/project-id/c/late-conversation";
+    const page = new MockPage({
+      clock,
+      initialUrl: projectUrl,
+      onInsertText: (state) => {
+        state.sendButtonVisible = true;
+        state.sendButtonEnabled = true;
+      },
+      onScreenshot: (state) => {
+        state.url = conversationUrl;
+        state.composerText = "";
+      },
+      onWait: (state) => {
+        if (state.url === conversationUrl && !assistantCreated) {
+          assistantCreated = true;
+          state.assistantCount = 1;
+          state.latestAssistantText = "late reply";
+        }
+      }
+    });
+
+    const responseText = await sendPromptWithFreshChatRecovery(page, "slow submission", {
+      chatgpt: { projectUrl },
+      workflow: {
+        responseTimeoutMs: 100,
+        pollIntervalMs: 1
+      }
+    });
+
+    assert.equal(responseText, "late reply");
+    assert.deepEqual(page.insertedTexts, ["slow submission"]);
+    assert.equal(page.sendClickCount, 1);
+    assert.equal(page.gotoCalls.length, 0);
+  });
+});
+
+test("sendPromptInCurrentChatAndWaitForResponse accepts a new assistant message when virtualized counts stay flat", async () => {
+  await withMockedClock(async (clock) => {
+    let assistantCreated = false;
+    const page = new MockPage({
+      clock,
+      initialUrl: "https://chatgpt.com/g/project-id/c/current-conversation",
+      initialAssistantCount: 4,
+      initialAssistantText: "previous row",
+      initialAssistantId: "old-message-id",
+      onInsertText: (state) => {
+        state.sendButtonVisible = true;
+        state.sendButtonEnabled = true;
+      },
+      onSubmit: (state) => {
+        state.userCount = 1;
+      },
+      onWait: (state) => {
+        if (clock.now >= 3 && !assistantCreated) {
+          assistantCreated = true;
+          state.assistantCount = 4;
+          state.latestAssistantId = "new-message-id";
+          state.latestAssistantText = "translated row";
+        }
+      }
+    });
+
+    const responseText = await sendPromptInCurrentChatAndWaitForResponse(page, "hello virtualized DOM", {
+      responseTimeoutMs: 20,
+      pollIntervalMs: 1
+    });
+
+    assert.equal(responseText, "translated row");
+    assert.deepEqual(page.insertedTexts, ["hello virtualized DOM"]);
+    assert.equal(page.sendClickCount, 1);
   });
 });
 
@@ -281,18 +433,21 @@ class MockPage {
     initialUrl,
     initialAssistantCount = 0,
     initialAssistantText = "",
+    initialAssistantId = "assistant-message-id",
     generating = false,
     sendButtonVisible = false,
     sendButtonEnabled = false,
     acceptsInput = true,
     onInsertText = () => {},
     onSubmit = () => {},
+    onScreenshot = () => {},
     onWait = () => {}
   }) {
     this.clock = clock;
     this.acceptsInput = acceptsInput;
     this.onInsertText = onInsertText;
     this.onSubmit = onSubmit;
+    this.onScreenshot = onScreenshot;
     this.onWait = onWait;
     this.selectionAll = false;
     this.state = {
@@ -300,6 +455,7 @@ class MockPage {
       userCount: 0,
       assistantCount: initialAssistantCount,
       latestAssistantText: initialAssistantText,
+      latestAssistantId: initialAssistantId,
       generating,
       sendButtonVisible,
       sendButtonEnabled,
@@ -310,6 +466,8 @@ class MockPage {
     this.enterPressCount = 0;
     this.waitForFunctionCallCount = 0;
     this.screenshots = [];
+    this.gotoCalls = [];
+    this.reloadCount = 0;
     this.keyboard = {
       insertText: async (text) => {
         this.insertedTexts.push(text);
@@ -340,6 +498,15 @@ class MockPage {
     return this.state.url;
   }
 
+  async goto(url) {
+    this.gotoCalls.push(url);
+    this.state.url = url;
+  }
+
+  async reload() {
+    this.reloadCount += 1;
+  }
+
   async waitForTimeout(timeoutMs) {
     this.clock.now += timeoutMs;
     await this.onWait(this.state, this);
@@ -363,6 +530,7 @@ class MockPage {
 
   async screenshot(options) {
     this.screenshots.push(options);
+    await this.onScreenshot(this.state, this, options);
   }
 }
 
@@ -476,6 +644,13 @@ class MockElementLocator {
     }
 
     return callback({
+      getAttribute: (name) => {
+        if (name === "data-message-id") {
+          return this.page.state.latestAssistantId;
+        }
+
+        return null;
+      },
       querySelectorAll: () => []
     });
   }
