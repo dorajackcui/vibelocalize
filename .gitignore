@@ -1,6 +1,18 @@
-node_modules
-.chrome-profile
+node_modules/
+.chrome-profile/
 automation.config.json
 automation.state.json
-debug
+debug/
 .DS_Store
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+*.swp
+.coverage
+coverage/
+
+# Local scratch workbooks
+/debug-*.xlsx
+/integration-test.xlsx
+/matrix-test.xlsx
